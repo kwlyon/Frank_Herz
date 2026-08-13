@@ -1,0 +1,591 @@
+"""Tkinter + Matplotlib laboratory interface."""
+
+from __future__ import annotations
+
+import argparse
+from datetime import datetime
+from pathlib import Path
+import queue
+import sys
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
+import serial.tools.list_ports
+
+from . import config
+from .core import (
+    AcquisitionController,
+    Calibration,
+    DataPoint,
+    downsample_for_display,
+)
+from .export import export_xlsx
+from .transport import SerialTransport, SimulatorTransport
+
+
+class FranckHertzApp(tk.Tk):
+    """Scientific XY plotter for paired tube-drive and picoammeter readings."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.title("Franck-Hertz Data Acquisition")
+        self.geometry("1180x760")
+        self.minsize(900, 600)
+
+        self._transport: SerialTransport | SimulatorTransport | None = None
+        self._event_queue: queue.Queue[tuple[str, bytes | str]] = queue.Queue()
+        self._handshake_timeout_id: str | None = None
+        self._last_plotted_count = -1
+        self._closing = False
+        self._port_open = False
+        self.controller = AcquisitionController(
+            sender=self._write,
+            calibration=Calibration(),
+        )
+
+        self._build_ui()
+        self._refresh_ports()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.after(config.UI_UPDATE_MS, self._process_events)
+
+    def _build_ui(self) -> None:
+        style = ttk.Style(self)
+        if "vista" in style.theme_names():
+            style.theme_use("vista")
+
+        controls = ttk.Frame(self, padding=(10, 10, 10, 4))
+        controls.pack(fill=tk.X)
+
+        self.connection_led = tk.Canvas(
+            controls, width=18, height=18, highlightthickness=0
+        )
+        self.connection_led.grid(row=0, column=0, padx=(0, 7), pady=2)
+        self._led = self.connection_led.create_oval(
+            2, 2, 16, 16, fill="#777777", outline="#555555"
+        )
+
+        ttk.Label(controls, text="Arduino port:").grid(row=0, column=1, sticky="w")
+        self.port_combo = ttk.Combobox(controls, width=26, state="readonly")
+        self.port_combo.grid(row=0, column=2, padx=(5, 6))
+        ttk.Button(controls, text="Refresh", command=self._refresh_ports).grid(
+            row=0, column=3, padx=(0, 8)
+        )
+        self.connect_button = ttk.Button(
+            controls, text="Connect", command=self._toggle_connection
+        )
+        self.connect_button.grid(row=0, column=4, padx=(0, 18))
+
+        self.start_button = ttk.Button(
+            controls,
+            text="Start Acquisition",
+            command=self._start_acquisition,
+            state=tk.DISABLED,
+        )
+        self.start_button.grid(row=0, column=5, padx=(0, 6))
+        self.stop_button = ttk.Button(
+            controls,
+            text="Stop Acquisition",
+            command=self._stop_acquisition,
+            state=tk.DISABLED,
+        )
+        self.stop_button.grid(row=0, column=6, padx=(0, 18))
+
+        self.clear_button = ttk.Button(
+            controls, text="Clear Data", command=self._clear_data
+        )
+        self.clear_button.grid(row=0, column=7, padx=(0, 6))
+        self.export_button = ttk.Button(
+            controls, text="Export Data", command=self._export_data
+        )
+        self.export_button.grid(row=0, column=8)
+        controls.columnconfigure(9, weight=1)
+
+        status_frame = ttk.Frame(self, padding=(12, 2, 12, 4))
+        status_frame.pack(fill=tk.X)
+        self.status_var = tk.StringVar(value="Disconnected")
+        self.status_label = tk.Label(
+            status_frame,
+            textvariable=self.status_var,
+            anchor="w",
+            fg="#555555",
+        )
+        self.status_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.count_var = tk.StringVar(value="0 points")
+        ttk.Label(status_frame, textvariable=self.count_var).pack(side=tk.RIGHT)
+
+        calibration_text = (
+            f"Drive scale: {self.controller.calibration.drive_scale:g}×    "
+            f"Picoammeter: {self.controller.calibration.picoammeter_mv_per_pa:g} mV/pA"
+        )
+        ttk.Label(self, text=calibration_text, foreground="#555555").pack(
+            anchor="w", padx=12, pady=(0, 2)
+        )
+
+        figure = Figure(figsize=(10.8, 6.2), dpi=100, constrained_layout=True)
+        self.axes = figure.add_subplot(111)
+        self.axes.set_title("Franck-Hertz Characteristic")
+        self.axes.set_xlabel("Drive Voltage (V)")
+        self.axes.set_ylabel("Tube Current (pA)")
+        self.axes.grid(True, color="#d8d8d8", linewidth=0.8)
+        self.axes.set_axisbelow(True)
+        (self.plot_line,) = self.axes.plot(
+            [],
+            [],
+            color="#145DA0",
+            linewidth=1.35,
+            marker="o",
+            markersize=2.2,
+            markeredgewidth=0,
+        )
+        self.axes.margins(x=0.05, y=0.08)
+        self.canvas = FigureCanvasTkAgg(figure, master=self)
+        self.canvas.draw()
+        self.canvas.get_tk_widget().pack(
+            fill=tk.BOTH, expand=True, padx=10, pady=(2, 10)
+        )
+
+    def _refresh_ports(self) -> None:
+        previous = self.port_combo.get()
+        ports = [port.device for port in serial.tools.list_ports.comports()]
+        values = ports + [config.SIMULATOR_PORT]
+        self.port_combo.configure(values=values)
+        if previous in values:
+            self.port_combo.set(previous)
+        elif ports:
+            self.port_combo.set(ports[0])
+        else:
+            self.port_combo.set(config.SIMULATOR_PORT)
+
+    def _toggle_connection(self) -> None:
+        if self._port_open:
+            self._disconnect("Disconnected")
+        else:
+            self._connect()
+
+    def _connect(self) -> None:
+        selected = self.port_combo.get().strip()
+        if not selected:
+            messagebox.showerror("No port selected", "Select an Arduino serial port.")
+            return
+
+        transport_class = (
+            SimulatorTransport if selected == config.SIMULATOR_PORT else SerialTransport
+        )
+        transport = transport_class(
+            on_line=lambda line: self._event_queue.put(("line", line)),
+            on_error=lambda error: self._event_queue.put(("error", error)),
+        )
+        try:
+            transport.open(selected, config.BAUD_RATE)
+        except (ConnectionError, OSError) as exc:
+            messagebox.showerror("Connection failed", str(exc))
+            self._set_status(f"Connection failed: {exc}", "error")
+            return
+
+        self._transport = transport
+        self._port_open = True
+        self.controller.disconnect()
+        self.connect_button.configure(text="Disconnect")
+        self.port_combo.configure(state=tk.DISABLED)
+        self.start_button.configure(state=tk.DISABLED)
+        self.stop_button.configure(state=tk.DISABLED)
+        self._set_led("waiting")
+        self._set_status(
+            f"Port open at {config.BAUD_RATE:,} baud; waiting for device handshake…",
+            "waiting",
+        )
+        self._cancel_handshake_timeout()
+        self._handshake_timeout_id = self.after(
+            int(config.HANDSHAKE_TIMEOUT_SECONDS * 1000),
+            self._handshake_timeout,
+        )
+
+    def _handshake_timeout(self) -> None:
+        self._handshake_timeout_id = None
+        if self._port_open and not self.controller.device_ready:
+            self._set_led("error")
+            self._set_status(
+                "Port is open, but no compatible Franck-Hertz firmware handshake was received.",
+                "error",
+            )
+
+    def _disconnect(self, status: str, error: bool = False) -> None:
+        self._cancel_handshake_timeout()
+        try:
+            if self.controller.running:
+                self.controller.stop()
+        except ConnectionError:
+            pass
+        transport = self._transport
+        self._transport = None
+        if transport is not None:
+            transport.close()
+        self._port_open = False
+        self.controller.disconnect()
+        self.connect_button.configure(text="Connect")
+        self.port_combo.configure(state="readonly")
+        self.start_button.configure(state=tk.DISABLED)
+        self.stop_button.configure(state=tk.DISABLED)
+        self._set_led("error" if error else "off")
+        self._set_status(status, "error" if error else "neutral")
+
+    def _write(self, data: bytes) -> None:
+        if self._transport is None or not self._transport.is_open():
+            raise ConnectionError("Arduino connection is not open.")
+        self._transport.write(data)
+
+    def _send_acquisition_settings(self) -> None:
+        self._write(f"avg,{config.DEFAULT_AVERAGES}\n".encode("ascii"))
+        self._write(
+            f"delay,{config.DEFAULT_SAMPLE_INTERVAL_MS}\n".encode("ascii")
+        )
+
+    def _start_acquisition(self) -> None:
+        try:
+            self.controller.start()
+        except (ConnectionError, RuntimeError) as exc:
+            self._event_queue.put(("error", f"Could not start acquisition: {exc}"))
+            return
+        self.start_button.configure(state=tk.DISABLED)
+        self.stop_button.configure(state=tk.NORMAL)
+        self._set_status("Acquiring paired drive-voltage and tube-current data…", "good")
+
+    def _stop_acquisition(self) -> None:
+        try:
+            self.controller.stop()
+        except ConnectionError as exc:
+            self._event_queue.put(("error", f"Acquisition stopped after serial error: {exc}"))
+            return
+        self.start_button.configure(state=tk.NORMAL)
+        self.stop_button.configure(state=tk.DISABLED)
+        self._set_status(
+            f"Acquisition paused; {len(self.controller.dataset):,} points retained.",
+            "neutral",
+        )
+
+    def _clear_data(self) -> bool:
+        cleared = self.controller.confirm_and_clear(
+            lambda: messagebox.askyesno(
+                "Permanently clear data?",
+                "Are you sure you want to permanently clear the current data?",
+                icon="warning",
+                default="no",
+            )
+        )
+        if not cleared:
+            return False
+        # Discard records that were received before the confirmed click but have
+        # not yet crossed the UI queue. A cancelled clear never discards data.
+        self._discard_queued_data_lines()
+        self._last_plotted_count = -1
+        self._redraw_plot(force=True)
+        self._set_status("Current dataset and plot cleared.", "neutral")
+        return True
+
+    def _discard_queued_data_lines(self) -> None:
+        retained: list[tuple[str, bytes | str]] = []
+        while True:
+            try:
+                event = self._event_queue.get_nowait()
+            except queue.Empty:
+                break
+            kind, payload = event
+            is_data = kind == "line" and (
+                (isinstance(payload, bytes) and payload.startswith(b"DATA,"))
+                or (isinstance(payload, str) and payload.startswith("DATA,"))
+            )
+            if not is_data:
+                retained.append(event)
+        for event in retained:
+            self._event_queue.put(event)
+
+    def _export_data(self) -> Path | None:
+        points = self.controller.dataset.snapshot()
+        if not points:
+            messagebox.showinfo("No data", "There is no collected data to export.")
+            return None
+        filename = f"franck_hertz_{datetime.now():%Y%m%d-%H%M%S}.xlsx"
+        selected = filedialog.asksaveasfilename(
+            title="Export Franck-Hertz data",
+            defaultextension=".xlsx",
+            filetypes=(("Excel workbook", "*.xlsx"),),
+            initialfile=filename,
+        )
+        if not selected:
+            return None
+        try:
+            row_count = export_xlsx(selected, points, self.controller.calibration)
+        except (OSError, PermissionError, ValueError) as exc:
+            messagebox.showerror("Export failed", str(exc))
+            self._set_status(f"Excel export failed: {exc}", "error")
+            return None
+        destination = Path(selected)
+        if destination.suffix.lower() != ".xlsx":
+            destination = destination.with_suffix(".xlsx")
+        self._set_status(
+            f"Exported {row_count:,} points to {destination}",
+            "good",
+        )
+        return destination
+
+    def _process_events(self) -> None:
+        if self._closing:
+            return
+        changed = False
+        for _ in range(1000):
+            try:
+                kind, payload = self._event_queue.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "error":
+                self._disconnect(str(payload), error=True)
+                continue
+            if kind != "line":
+                continue
+            text = (
+                payload.decode("ascii", errors="replace").strip()
+                if isinstance(payload, bytes)
+                else payload.strip()
+            )
+            if text == config.HANDSHAKE_BANNER:
+                self._handle_handshake()
+            elif text.startswith("ERR,"):
+                self._set_status(f"Arduino reported: {text}", "error")
+            elif text.startswith("#") or not text:
+                continue
+            else:
+                before = len(self.controller.dataset)
+                self.controller.ingest(text)
+                changed = changed or len(self.controller.dataset) != before
+                if self.controller.storage_full:
+                    self.start_button.configure(state=tk.NORMAL)
+                    self.stop_button.configure(state=tk.DISABLED)
+                    self._set_status(
+                        "Acquisition paused because the stored-point safety limit was reached.",
+                        "error",
+                    )
+
+        if changed or len(self.controller.dataset) != self._last_plotted_count:
+            self._redraw_plot()
+        self.after(config.UI_UPDATE_MS, self._process_events)
+
+    def _handle_handshake(self) -> None:
+        was_ready = self.controller.device_ready
+        resume_after_reset = was_ready and self.controller.running
+        self.controller.mark_device_ready()
+        self._cancel_handshake_timeout()
+        self._set_led("on")
+        try:
+            self._send_acquisition_settings()
+            if resume_after_reset:
+                self._write(config.START_COMMAND)
+        except ConnectionError as exc:
+            self._event_queue.put(("error", f"Device setup failed: {exc}"))
+            return
+        self.start_button.configure(
+            state=tk.DISABLED if self.controller.running else tk.NORMAL
+        )
+        self.stop_button.configure(
+            state=tk.NORMAL if self.controller.running else tk.DISABLED
+        )
+        if resume_after_reset:
+            self._set_status(
+                "Arduino reset detected; acquisition settings restored and streaming resumed.",
+                "waiting",
+            )
+        else:
+            self._set_status("Arduino connected and ready.", "good")
+
+    def _redraw_plot(self, force: bool = False) -> None:
+        points = self.controller.dataset.snapshot()
+        count = len(points)
+        if not force and count == self._last_plotted_count:
+            return
+        x_values, y_values = downsample_for_display(points)
+        self.plot_line.set_data(x_values, y_values)
+        self.count_var.set(f"{count:,} point" + ("" if count == 1 else "s"))
+        self._last_plotted_count = count
+        if x_values and y_values:
+            self.axes.relim()
+            self.axes.autoscale_view()
+            self._pad_equal_range(x_values, self.axes.set_xlim)
+            self._pad_equal_range(y_values, self.axes.set_ylim)
+        else:
+            self.axes.set_xlim(0.0, 1.0)
+            self.axes.set_ylim(0.0, 1.0)
+        self.canvas.draw_idle()
+
+    @staticmethod
+    def _pad_equal_range(values: list[float], setter) -> None:
+        low = min(values)
+        high = max(values)
+        if low == high:
+            padding = max(1.0, abs(low) * 0.1)
+            setter(low - padding, high + padding)
+
+    def _set_led(self, state: str) -> None:
+        colors = {
+            "off": ("#777777", "#555555"),
+            "waiting": ("#E6A700", "#A87800"),
+            "on": ("#2EAD5B", "#18793A"),
+            "error": ("#D64545", "#8E2525"),
+        }
+        fill, outline = colors[state]
+        self.connection_led.itemconfigure(self._led, fill=fill, outline=outline)
+
+    def _set_status(self, text: str, state: str) -> None:
+        colors = {
+            "neutral": "#555555",
+            "waiting": "#9A6800",
+            "good": "#18793A",
+            "error": "#B22929",
+        }
+        self.status_var.set(text)
+        self.status_label.configure(fg=colors[state])
+
+    def _cancel_handshake_timeout(self) -> None:
+        if self._handshake_timeout_id is None:
+            return
+        try:
+            self.after_cancel(self._handshake_timeout_id)
+        except tk.TclError:
+            pass
+        self._handshake_timeout_id = None
+
+    def _on_close(self) -> None:
+        self._closing = True
+        self._cancel_handshake_timeout()
+        try:
+            if self.controller.running:
+                self.controller.stop()
+        except ConnectionError:
+            pass
+        if self._transport is not None:
+            self._transport.close()
+        self.destroy()
+
+
+def run_self_test() -> None:
+    """Fast packaged-app diagnostic used for source and executable smoke tests."""
+
+    calibration = Calibration()
+    sent: list[bytes] = []
+    controller = AcquisitionController(sent.append, calibration=calibration)
+    controller.mark_device_ready()
+    controller.start()
+    controller.ingest("DATA,100,1600,3200,0.100000,0.200000")
+    controller.stop()
+    if len(controller.dataset) != 1:
+        raise RuntimeError("Acquisition pipeline self-test failed.")
+    path = Path.cwd() / ".frank_herz_self_test.xlsx"
+    try:
+        export_xlsx(path, controller.dataset.snapshot(), calibration)
+        if not path.is_file() or path.stat().st_size == 0:
+            raise RuntimeError("Excel export self-test failed.")
+    finally:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def run_gui_smoke_test() -> None:
+    """Exercise the real GUI controls against the protocol simulator."""
+
+    app = FranckHertzApp()
+    app.port_combo.set(config.SIMULATOR_PORT)
+    failures: list[str] = []
+
+    def connect() -> None:
+        app._connect()
+
+    def start() -> None:
+        if not app.controller.device_ready:
+            failures.append("simulator handshake was not processed")
+        else:
+            app._start_acquisition()
+
+    retained_after_stop = [0]
+
+    def stop_and_check_retention() -> None:
+        if not len(app.controller.dataset):
+            failures.append("no simulated measurements reached the GUI")
+        app._stop_acquisition()
+        retained_after_stop[0] = len(app.controller.dataset)
+        if not retained_after_stop[0]:
+            failures.append("stop erased the GUI dataset")
+        app._start_acquisition()
+
+    def check_resume_and_reset() -> None:
+        if len(app.controller.dataset) <= retained_after_stop[0]:
+            failures.append("resume did not append to the existing GUI dataset")
+        # Repeating the banner emulates an Arduino reset during an active run.
+        app._event_queue.put(("line", config.HANDSHAKE_BANNER.encode("ascii")))
+
+    def check_clear_confirmation() -> None:
+        app._stop_acquisition()
+        before_clear = len(app.controller.dataset)
+        original_askyesno = messagebox.askyesno
+        try:
+            messagebox.askyesno = lambda *args, **kwargs: False
+            if app._clear_data() or len(app.controller.dataset) != before_clear:
+                failures.append("cancelled clear changed the GUI dataset")
+            messagebox.askyesno = lambda *args, **kwargs: True
+            if not app._clear_data() or len(app.controller.dataset) != 0:
+                failures.append("confirmed clear did not erase the GUI dataset")
+        finally:
+            messagebox.askyesno = original_askyesno
+
+    def simulate_link_loss() -> None:
+        transport = app._transport
+        if isinstance(transport, SimulatorTransport):
+            transport.simulate_disconnect()
+        else:
+            failures.append("GUI smoke test lost its simulator transport")
+
+    def verify_disconnect_and_close() -> None:
+        if app.controller.device_ready or app.controller.running:
+            failures.append("connection loss did not stop the GUI acquisition state")
+        if "interrupted" not in app.status_var.get().lower():
+            failures.append("connection loss was not reported in GUI status")
+        app._on_close()
+
+    app.after(50, connect)
+    app.after(250, start)
+    app.after(850, stop_and_check_retention)
+    app.after(1250, check_resume_and_reset)
+    app.after(1500, check_clear_confirmation)
+    app.after(1650, simulate_link_loss)
+    app.after(1850, verify_disconnect_and_close)
+    app.mainloop()
+    if failures:
+        raise RuntimeError("; ".join(failures))
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Franck-Hertz data acquisition")
+    parser.add_argument(
+        "--smoke-test",
+        action="store_true",
+        help="run a non-GUI acquisition/export diagnostic and exit",
+    )
+    parser.add_argument(
+        "--gui-smoke-test",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    options = parser.parse_args(argv)
+    if options.smoke_test:
+        run_self_test()
+        return 0
+    if options.gui_smoke_test:
+        run_gui_smoke_test()
+        return 0
+    FranckHertzApp().mainloop()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
