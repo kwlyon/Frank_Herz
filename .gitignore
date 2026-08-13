@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.test_tmp/
+.frank_herz_self_test.xlsx
+.venv/
+venv/
+
+# PyInstaller output
+build/
+dist/
+.arduino_build/
+*.log
+
+# User data exports
+*.xlsx
+
+# Editors and Windows
+.idea/
+.vscode/
+*.code-workspace
+Thumbs.db
+Desktop.ini
+*.tmp
+~$*
