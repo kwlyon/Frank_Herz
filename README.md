@@ -131,10 +131,10 @@ python -m pip install -r requirements-dev.txt
 python -m PyInstaller --noconfirm Frank_Herz.spec
 ```
 
-The executable is generated at `dist/Frank_Herz.exe`. Test the packaged acquisition/export path with:
+The executable is generated at `dist/Frank_Herz/Frank_Herz.exe`, with its required runtime files in the adjacent `_internal` folder. Keep the distribution folder together when copying it to the laboratory computer. Test the packaged acquisition/export path with:
 
 ```powershell
-dist\Frank_Herz.exe --smoke-test
+dist\Frank_Herz\Frank_Herz.exe --smoke-test
 ```
 
 `build/` and `dist/` are intentionally ignored by Git. Rebuild from the versioned source and PyInstaller specification for the target laboratory computer.

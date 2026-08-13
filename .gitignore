@@ -12,6 +12,7 @@ venv/
 build/
 dist/
 .arduino_build/
+.exe_tmp/
 *.log
 
 # User data exports
