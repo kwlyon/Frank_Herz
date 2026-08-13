@@ -152,8 +152,10 @@ Choose the Arduino COM port and click **Connect**. A green indicator and “Ardu
 3. Select the COM port and click **Connect**.
 4. Click **Start Acquisition** to append live `(Drive Voltage, Tube Current)` points.
 5. Click **Stop Acquisition** to pause. Existing points remain displayed; **Start Acquisition** resumes appending to the same dataset.
-6. Click **Clear Data** only to begin a new dataset. A confirmation dialog is required before existing points are permanently removed.
-7. Click **Export Data** and choose an `.xlsx` filename.
+6. Use the plot toolbar to go Home, move Back/Forward through views, Pan, box-Zoom, configure the plot, or save an image. Manual pan/zoom pauses live autoscaling so new samples do not overwrite the selected view.
+7. Leave **Auto-scale live** selected to continuously fit all acquired data. Select **Home** or reselect **Auto-scale live** at any time to fit the full dataset again.
+8. Click **Clear Data** only to begin a new dataset. A confirmation dialog is required before existing points are permanently removed.
+9. Click **Export Data** and choose an `.xlsx` filename.
 
 The workbook's primary columns are `Drive Voltage (V)` and `Tube Current (pA)`. It also includes elapsed time, both ADC voltages, both raw averaged counts, and a calibration worksheet.
 

@@ -10,7 +10,7 @@ import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
 import serial.tools.list_ports
 
@@ -23,6 +23,18 @@ from .core import (
 )
 from .export import export_xlsx
 from .transport import SerialTransport, SimulatorTransport
+
+
+class PlotNavigationToolbar(NavigationToolbar2Tk):
+    """Matplotlib toolbar whose Home action restores live autoscaling."""
+
+    def __init__(self, *args, home_callback, **kwargs) -> None:
+        self._home_callback = home_callback
+        super().__init__(*args, **kwargs)
+
+    def home(self, *args) -> None:
+        del args
+        self._home_callback()
 
 
 class FranckHertzApp(tk.Tk):
@@ -43,8 +55,10 @@ class FranckHertzApp(tk.Tk):
         self._paired_mode_requested = False
         self._resume_after_protocol = False
         self._last_plotted_count = -1
+        self._changing_plot_limits = False
         self._closing = False
         self._port_open = False
+        self.autoscale_var = tk.BooleanVar(value=True)
         self.controller = AcquisitionController(
             sender=self._write,
             calibration=Calibration(),
@@ -128,8 +142,8 @@ class FranckHertzApp(tk.Tk):
             anchor="w", padx=12, pady=(0, 2)
         )
 
-        figure = Figure(figsize=(10.8, 6.2), dpi=100, constrained_layout=True)
-        self.axes = figure.add_subplot(111)
+        self.figure = Figure(figsize=(10.8, 6.2), dpi=100, constrained_layout=True)
+        self.axes = self.figure.add_subplot(111)
         self.axes.set_title("Franck-Hertz Characteristic")
         self.axes.set_xlabel("Drive Voltage (V)")
         self.axes.set_ylabel("Tube Current (pA)")
@@ -145,11 +159,35 @@ class FranckHertzApp(tk.Tk):
             markeredgewidth=0,
         )
         self.axes.margins(x=0.05, y=0.08)
-        self.canvas = FigureCanvasTkAgg(figure, master=self)
+        plot_frame = ttk.Frame(self, padding=(10, 2, 10, 8))
+        plot_frame.pack(fill=tk.BOTH, expand=True)
+        self.canvas = FigureCanvasTkAgg(self.figure, master=plot_frame)
         self.canvas.draw()
         self.canvas.get_tk_widget().pack(
-            fill=tk.BOTH, expand=True, padx=10, pady=(2, 10)
+            side=tk.TOP, fill=tk.BOTH, expand=True
         )
+
+        navigation_frame = ttk.Frame(plot_frame)
+        navigation_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(3, 0))
+        self.toolbar = PlotNavigationToolbar(
+            self.canvas,
+            navigation_frame,
+            pack_toolbar=False,
+            home_callback=self._home_plot,
+        )
+        self.toolbar.update()
+        self.toolbar.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Checkbutton(
+            navigation_frame,
+            text="Auto-scale live",
+            variable=self.autoscale_var,
+            command=self._toggle_autoscale,
+        ).pack(side=tk.RIGHT, padx=(10, 4))
+
+        # A toolbar pan/zoom changes the axes limits. That change pauses live
+        # autoscaling so incoming samples do not immediately undo the view.
+        self.axes.callbacks.connect("xlim_changed", self._manual_limits_changed)
+        self.axes.callbacks.connect("ylim_changed", self._manual_limits_changed)
 
     def _refresh_ports(self) -> None:
         previous = self.port_combo.get()
@@ -321,6 +359,7 @@ class FranckHertzApp(tk.Tk):
         # Discard records that were received before the confirmed click but have
         # not yet crossed the UI queue. A cancelled clear never discards data.
         self._discard_queued_data_lines()
+        self.autoscale_var.set(True)
         self._last_plotted_count = -1
         self._redraw_plot(force=True)
         self._set_status("Current dataset and plot cleared.", "neutral")
@@ -495,13 +534,59 @@ class FranckHertzApp(tk.Tk):
         self._last_plotted_count = count
         if x_values and y_values:
             self.axes.relim()
+            if self.autoscale_var.get():
+                self._apply_autoscale(x_values, y_values)
+        else:
+            self._changing_plot_limits = True
+            try:
+                self.axes.set_xlim(0.0, 1.0)
+                self.axes.set_ylim(0.0, 1.0)
+                self.axes.set_autoscalex_on(True)
+                self.axes.set_autoscaley_on(True)
+            finally:
+                self._changing_plot_limits = False
+        self.canvas.draw_idle()
+
+    def _apply_autoscale(
+        self, x_values: list[float], y_values: list[float]
+    ) -> None:
+        """Fit both axes while keeping live autoscaling enabled."""
+
+        self._changing_plot_limits = True
+        try:
+            self.axes.set_autoscalex_on(True)
+            self.axes.set_autoscaley_on(True)
+            self.axes.relim()
             self.axes.autoscale_view()
             self._pad_equal_range(x_values, self.axes.set_xlim)
             self._pad_equal_range(y_values, self.axes.set_ylim)
+            # set_xlim/set_ylim disable autoscaling for a single-valued axis.
+            self.axes.set_autoscalex_on(True)
+            self.axes.set_autoscaley_on(True)
+        finally:
+            self._changing_plot_limits = False
+
+    def _manual_limits_changed(self, _axes) -> None:
+        """Hold a user-selected pan/zoom instead of overwriting it live."""
+
+        if self._changing_plot_limits:
+            return
+        self.autoscale_var.set(False)
+        self.axes.set_autoscalex_on(False)
+        self.axes.set_autoscaley_on(False)
+
+    def _toggle_autoscale(self) -> None:
+        if self.autoscale_var.get():
+            self._home_plot()
         else:
-            self.axes.set_xlim(0.0, 1.0)
-            self.axes.set_ylim(0.0, 1.0)
-        self.canvas.draw_idle()
+            self.axes.set_autoscalex_on(False)
+            self.axes.set_autoscaley_on(False)
+
+    def _home_plot(self) -> None:
+        """Fit the complete dataset and resume live autoscaling."""
+
+        self.autoscale_var.set(True)
+        self._redraw_plot(force=True)
 
     @staticmethod
     def _pad_equal_range(values: list[float], setter) -> None:
@@ -612,6 +697,22 @@ def run_gui_smoke_test() -> None:
         retained_after_stop[0] = len(app.controller.dataset)
         if not retained_after_stop[0]:
             failures.append("stop erased the GUI dataset")
+
+        if not app.autoscale_var.get():
+            failures.append("live autoscaling was not enabled by default")
+        manual_limits = (10.0, 20.0)
+        app.axes.set_xlim(*manual_limits)
+        if app.autoscale_var.get():
+            failures.append("manual plot scaling did not pause live autoscaling")
+        app._redraw_plot(force=True)
+        if tuple(app.axes.get_xlim()) != manual_limits:
+            failures.append("a live redraw overwrote manual plot limits")
+        app.toolbar.home()
+        if not app.autoscale_var.get():
+            failures.append("Home did not restore live autoscaling")
+        if tuple(app.axes.get_xlim()) == manual_limits:
+            failures.append("Home did not fit the collected data")
+
         app._start_acquisition()
 
     def check_resume_and_reset() -> None:
