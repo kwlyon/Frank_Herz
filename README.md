@@ -17,6 +17,13 @@ The two independent low-gain signal paths used here are:
 
 The companion higher-gain paths reach AIN1 and AIN3 and are not used. Each paired record is produced by alternating AIN0 and AIN2 reads inside the averaging loop, minimizing channel-to-channel time skew.
 
+The ADS1115 has four inputs numbered AIN0 through AIN3 (there is no AIN4).
+Schematic tracing shows that the first BNC feeds AIN0/AIN1 and the second BNC
+feeds AIN2/AIN3. The legacy V4 Recorder comments label AIN0 and AIN2 as `1x`
+and `10x`; that comment conflicts with the dual-board schematic. Those two
+channels are the lower-gain paths of the two separate BNC inputs, which is why
+this application deliberately pairs AIN0 with AIN2.
+
 The ADS1115 uses `GAIN_TWO`, a ±2.048 V converter range with 62.5 µV/count. In single-ended operation, signals must remain between ground and the allowed positive input limit. **Never connect the high-voltage tube drive directly to the shield.** Use an isolated/appropriate monitor output or a properly rated external divider, and verify the voltage at the shield input with a meter.
 
 ## Calibration
@@ -57,7 +64,14 @@ Open and upload [`arduino/Frank_Herz_DAQ/Frank_Herz_DAQ.ino`](arduino/Frank_Herz
 - ADS1115 address `0x49`
 - `GAIN_TWO` (±2.048 V, 62.5 µV/count)
 - drive on AIN0 followed by picoammeter output on AIN2
-- startup banner: `Franck-Hertz Data Acquisition Shield`
+- shared hardware banner: `Modern Lab Data Acquisition Shield` (the same banner used by `SerialPlotter`)
+- paired-protocol capability: `#protocol,franck-hertz-paired,1`
+
+The shared banner identifies the physical shield, not the application mode. The
+Franck-Hertz app enables acquisition only after it also receives the paired
+capability line. If the original single-channel Recorder firmware is still
+installed, the app reports that the shield was found and asks for the included
+Franck-Hertz firmware rather than presenting a false ready state.
 
 The data record is:
 
@@ -79,9 +93,15 @@ Supported commands are:
 | `stop` | Pause records |
 | `avg,N` | Average N sequential read pairs (`1..1000`) |
 | `delay,N` | Minimum record interval in milliseconds (`10..10000`) |
-| `idn?` | Repeat the device banner |
+| `idn?` | Repeat the shared device banner and paired-protocol capability |
 
-Acknowledgements start with `#`; firmware errors start with `ERR,`. The application ignores malformed records without crashing. If the serial link fails, acquisition stops locally while the collected dataset remains intact. If the Arduino resets and repeats its banner during an active run, the application restores acquisition settings and resumes streaming.
+Acknowledgements start with `#`; firmware errors start with `ERR,`. The app sends
+periodic `idn?` queries while connecting, so it can recover if the Arduino's
+one-time startup banner was emitted before the serial reader was ready. The
+application ignores malformed records without crashing. If the serial link
+fails, acquisition stops locally while the collected dataset remains intact. If
+the Arduino resets and repeats its identity during an active run, the application
+restores acquisition settings and resumes streaming.
 
 ## Run from source
 

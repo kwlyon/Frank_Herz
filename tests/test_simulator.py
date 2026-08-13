@@ -20,6 +20,8 @@ class SimulatorTests(unittest.TestCase):
 
         banner = lines.get(timeout=1.0)
         self.assertEqual(banner.decode("ascii"), config.HANDSHAKE_BANNER)
+        capability = lines.get(timeout=1.0)
+        self.assertEqual(capability.decode("ascii"), config.PROTOCOL_CAPABILITY)
         controller.mark_device_ready()
         simulator.write(b"delay,10\n")
         controller.start()

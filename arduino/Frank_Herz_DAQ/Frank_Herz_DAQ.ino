@@ -19,7 +19,10 @@ const uint8_t ADS1115_ADDRESS = 0x49;
 const uint8_t DRIVE_CHANNEL = 0;
 const uint8_t CURRENT_CHANNEL = 2;
 const float ADS_VOLTS_PER_COUNT = 0.0000625F;  // GAIN_TWO, +/-2.048 V
-const char DEVICE_NAME[] = "Franck-Hertz Data Acquisition Shield";
+// The shared banner identifies the physical shield and matches SerialPlotter.
+// The capability line below distinguishes this paired-channel protocol.
+const char DEVICE_NAME[] = "Modern Lab Data Acquisition Shield";
+const char PROTOCOL_CAPABILITY[] = "#protocol,franck-hertz-paired,1";
 
 uint16_t samplesToAverage = 10;
 uint32_t sampleIntervalMs = 50;
@@ -29,6 +32,11 @@ uint32_t lastSampleMs = 0;
 Adafruit_ADS1115 ads;
 char commandBuffer[48];
 uint8_t commandLength = 0;
+
+void printIdentity() {
+  Serial.println(DEVICE_NAME);
+  Serial.println(PROTOCOL_CAPABILITY);
+}
 
 void printAcknowledgement(const char* name, uint32_t value) {
   Serial.print('#');
@@ -64,7 +72,7 @@ void processCommand() {
       Serial.println(F("ERR,BAD_DELAY"));
     }
   } else if (strcasecmp(commandBuffer, "idn?") == 0) {
-    Serial.println(DEVICE_NAME);
+    printIdentity();
   } else if (commandLength > 0) {
     Serial.println(F("ERR,UNKNOWN_COMMAND"));
   }
@@ -127,7 +135,7 @@ void setup() {
   }
   ads.setGain(GAIN_TWO);                // +/-2.048 V, 62.5 uV/count
   ads.setDataRate(RATE_ADS1115_860SPS); // fast paired sampling
-  Serial.println(DEVICE_NAME);
+  printIdentity();
 }
 
 void loop() {

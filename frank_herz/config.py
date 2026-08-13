@@ -6,11 +6,16 @@ calibrate the setup without searching through the GUI or serial code.
 
 # Serial protocol. These values must match Frank_Herz_DAQ.ino.
 BAUD_RATE = 115_200
-HANDSHAKE_BANNER = "Franck-Hertz Data Acquisition Shield"
+# The banner identifies the physical Modern Lab shield and intentionally matches
+# SerialPlotter. A separate capability line identifies paired Franck-Hertz data.
+HANDSHAKE_BANNER = "Modern Lab Data Acquisition Shield"
+PROTOCOL_CAPABILITY = "#protocol,franck-hertz-paired,1"
+IDENTIFY_COMMAND = b"idn?\n"
 START_COMMAND = b"run\n"
 STOP_COMMAND = b"stop\n"
 LINE_ENDING = b"\n"
 HANDSHAKE_TIMEOUT_SECONDS = 10.0
+IDENTIFY_RETRY_MS = 1_000
 
 # Firmware acquisition defaults.
 DEFAULT_AVERAGES = 10

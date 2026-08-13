@@ -141,6 +141,7 @@ class SimulatorTransport:
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
         self._on_line(config.HANDSHAKE_BANNER.encode("ascii"))
+        self._on_line(config.PROTOCOL_CAPABILITY.encode("ascii"))
 
     def is_open(self) -> bool:
         return self._opened
@@ -169,6 +170,7 @@ class SimulatorTransport:
                 self._on_line(b"ERR,BAD_DELAY")
         elif command == "idn?":
             self._on_line(config.HANDSHAKE_BANNER.encode("ascii"))
+            self._on_line(config.PROTOCOL_CAPABILITY.encode("ascii"))
         else:
             self._on_line(b"ERR,UNKNOWN_COMMAND")
 

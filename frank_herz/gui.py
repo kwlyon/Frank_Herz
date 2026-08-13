@@ -37,6 +37,9 @@ class FranckHertzApp(tk.Tk):
         self._transport: SerialTransport | SimulatorTransport | None = None
         self._event_queue: queue.Queue[tuple[str, bytes | str]] = queue.Queue()
         self._handshake_timeout_id: str | None = None
+        self._identity_probe_id: str | None = None
+        self._hardware_banner_seen = False
+        self._resume_after_protocol = False
         self._last_plotted_count = -1
         self._closing = False
         self._port_open = False
@@ -187,6 +190,8 @@ class FranckHertzApp(tk.Tk):
         self._transport = transport
         self._port_open = True
         self.controller.disconnect()
+        self._hardware_banner_seen = False
+        self._resume_after_protocol = False
         self.connect_button.configure(text="Disconnect")
         self.port_combo.configure(state=tk.DISABLED)
         self.start_button.configure(state=tk.DISABLED)
@@ -201,18 +206,27 @@ class FranckHertzApp(tk.Tk):
             int(config.HANDSHAKE_TIMEOUT_SECONDS * 1000),
             self._handshake_timeout,
         )
+        self._schedule_identity_probe(500)
 
     def _handshake_timeout(self) -> None:
         self._handshake_timeout_id = None
         if self._port_open and not self.controller.device_ready:
             self._set_led("error")
-            self._set_status(
-                "Port is open, but no compatible Franck-Hertz firmware handshake was received.",
-                "error",
-            )
+            if self._hardware_banner_seen:
+                self._set_status(
+                    "Modern Lab shield detected, but paired-channel firmware was not found. "
+                    "Upload Frank_Herz_DAQ.ino to this Arduino.",
+                    "error",
+                )
+            else:
+                self._set_status(
+                    "Port is open, but no Modern Lab Data Acquisition Shield responded.",
+                    "error",
+                )
 
     def _disconnect(self, status: str, error: bool = False) -> None:
         self._cancel_handshake_timeout()
+        self._cancel_identity_probe()
         try:
             if self.controller.running:
                 self.controller.stop()
@@ -224,6 +238,8 @@ class FranckHertzApp(tk.Tk):
             transport.close()
         self._port_open = False
         self.controller.disconnect()
+        self._hardware_banner_seen = False
+        self._resume_after_protocol = False
         self.connect_button.configure(text="Connect")
         self.port_combo.configure(state="readonly")
         self.start_button.configure(state=tk.DISABLED)
@@ -241,6 +257,21 @@ class FranckHertzApp(tk.Tk):
         self._write(
             f"delay,{config.DEFAULT_SAMPLE_INTERVAL_MS}\n".encode("ascii")
         )
+
+    def _schedule_identity_probe(self, delay_ms: int = config.IDENTIFY_RETRY_MS) -> None:
+        self._cancel_identity_probe()
+        self._identity_probe_id = self.after(delay_ms, self._probe_identity)
+
+    def _probe_identity(self) -> None:
+        self._identity_probe_id = None
+        if not self._port_open or self.controller.device_ready:
+            return
+        try:
+            self._write(config.IDENTIFY_COMMAND)
+        except ConnectionError as exc:
+            self._event_queue.put(("error", f"Device identification failed: {exc}"))
+            return
+        self._schedule_identity_probe()
 
     def _start_acquisition(self) -> None:
         try:
@@ -350,7 +381,9 @@ class FranckHertzApp(tk.Tk):
                 else payload.strip()
             )
             if text == config.HANDSHAKE_BANNER:
-                self._handle_handshake()
+                self._handle_hardware_banner()
+            elif text == config.PROTOCOL_CAPABILITY:
+                self._handle_protocol_capability()
             elif text.startswith("ERR,"):
                 self._set_status(f"Arduino reported: {text}", "error")
             elif text.startswith("#") or not text:
@@ -371,16 +404,35 @@ class FranckHertzApp(tk.Tk):
             self._redraw_plot()
         self.after(config.UI_UPDATE_MS, self._process_events)
 
-    def _handle_handshake(self) -> None:
-        was_ready = self.controller.device_ready
-        resume_after_reset = was_ready and self.controller.running
+    def _handle_hardware_banner(self) -> None:
+        """Record the shared shield identity; paired capability is still required."""
+
+        if self.controller.device_ready:
+            self._resume_after_protocol = self.controller.running
+            self.controller.disconnect()
+            self.start_button.configure(state=tk.DISABLED)
+            self.stop_button.configure(state=tk.DISABLED)
+        self._hardware_banner_seen = True
+        self._set_led("waiting")
+        self._set_status(
+            "Modern Lab shield detected; verifying paired-channel firmware…",
+            "waiting",
+        )
+
+    def _handle_protocol_capability(self) -> None:
+        """Enable acquisition only after the paired record format is confirmed."""
+
+        self._hardware_banner_seen = True
+        resume_after_reset = self._resume_after_protocol
+        self._resume_after_protocol = False
         self.controller.mark_device_ready()
         self._cancel_handshake_timeout()
+        self._cancel_identity_probe()
         self._set_led("on")
         try:
             self._send_acquisition_settings()
             if resume_after_reset:
-                self._write(config.START_COMMAND)
+                self.controller.start()
         except ConnectionError as exc:
             self._event_queue.put(("error", f"Device setup failed: {exc}"))
             return
@@ -454,9 +506,19 @@ class FranckHertzApp(tk.Tk):
             pass
         self._handshake_timeout_id = None
 
+    def _cancel_identity_probe(self) -> None:
+        if self._identity_probe_id is None:
+            return
+        try:
+            self.after_cancel(self._identity_probe_id)
+        except tk.TclError:
+            pass
+        self._identity_probe_id = None
+
     def _on_close(self) -> None:
         self._closing = True
         self._cancel_handshake_timeout()
+        self._cancel_identity_probe()
         try:
             if self.controller.running:
                 self.controller.stop()
@@ -521,8 +583,9 @@ def run_gui_smoke_test() -> None:
     def check_resume_and_reset() -> None:
         if len(app.controller.dataset) <= retained_after_stop[0]:
             failures.append("resume did not append to the existing GUI dataset")
-        # Repeating the banner emulates an Arduino reset during an active run.
+        # Repeating identity + capability emulates an Arduino reset during a run.
         app._event_queue.put(("line", config.HANDSHAKE_BANNER.encode("ascii")))
+        app._event_queue.put(("line", config.PROTOCOL_CAPABILITY.encode("ascii")))
 
     def check_clear_confirmation() -> None:
         app._stop_acquisition()
