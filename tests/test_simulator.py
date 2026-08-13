@@ -22,6 +22,10 @@ class SimulatorTests(unittest.TestCase):
         self.assertEqual(banner.decode("ascii"), config.HANDSHAKE_BANNER)
         capability = lines.get(timeout=1.0)
         self.assertEqual(capability.decode("ascii"), config.PROTOCOL_CAPABILITY)
+        simulator.write(config.PAIRED_MODE_COMMAND)
+        self.assertEqual(
+            lines.get(timeout=1.0).decode("ascii"), config.PAIRED_MODE_ACK
+        )
         controller.mark_device_ready()
         simulator.write(b"delay,10\n")
         controller.start()
@@ -48,6 +52,35 @@ class SimulatorTests(unittest.TestCase):
         controller.disconnect()
         self.assertFalse(controller.running)
         self.assertGreater(len(controller.dataset), 0)
+
+    def test_legacy_serialplotter_mode_is_default_and_gain_commands_select_it(self) -> None:
+        lines: queue.Queue[bytes] = queue.Queue()
+        simulator = SimulatorTransport(lines.put, lambda error: None)
+        simulator.open()
+        self.addCleanup(simulator.close)
+        lines.get(timeout=1.0)  # shared banner
+        lines.get(timeout=1.0)  # capability (ignored by SerialPlotter)
+
+        # This is the command sequence recorder4.py sends after its handshake.
+        simulator.write(b"1x\n")
+        simulator.write(b"avg,100\n")
+        simulator.write(b"run\n")
+        deadline = time.monotonic() + 1.0
+        data_line = ""
+        while time.monotonic() < deadline:
+            candidate = lines.get(timeout=0.5).decode("ascii")
+            if not candidate.startswith("#"):
+                data_line = candidate
+                break
+        fields = data_line.split(",")
+        self.assertEqual(len(fields), 2)
+        float(fields[0])
+        float(fields[1])
+
+        simulator.write(b"mode,paired\n")
+        self.assertEqual(lines.get(timeout=1.0), b"#mode,paired")
+        simulator.write(b"10x\n")  # legacy command must always restore legacy mode
+        self.assertEqual(lines.get(timeout=1.0), b"#10x")
 
 
 if __name__ == "__main__":

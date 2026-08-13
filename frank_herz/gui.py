@@ -39,6 +39,8 @@ class FranckHertzApp(tk.Tk):
         self._handshake_timeout_id: str | None = None
         self._identity_probe_id: str | None = None
         self._hardware_banner_seen = False
+        self._paired_capability_seen = False
+        self._paired_mode_requested = False
         self._resume_after_protocol = False
         self._last_plotted_count = -1
         self._closing = False
@@ -191,6 +193,8 @@ class FranckHertzApp(tk.Tk):
         self._port_open = True
         self.controller.disconnect()
         self._hardware_banner_seen = False
+        self._paired_capability_seen = False
+        self._paired_mode_requested = False
         self._resume_after_protocol = False
         self.connect_button.configure(text="Disconnect")
         self.port_combo.configure(state=tk.DISABLED)
@@ -213,9 +217,14 @@ class FranckHertzApp(tk.Tk):
         if self._port_open and not self.controller.device_ready:
             self._set_led("error")
             if self._hardware_banner_seen:
+                detail = (
+                    "paired mode did not start"
+                    if self._paired_capability_seen
+                    else "paired-channel firmware was not found"
+                )
                 self._set_status(
-                    "Modern Lab shield detected, but paired-channel firmware was not found. "
-                    "Upload Frank_Herz_DAQ.ino to this Arduino.",
+                    f"Modern Lab shield detected, but {detail}. "
+                    "Upload the current Frank_Herz_DAQ.ino to this Arduino.",
                     "error",
                 )
             else:
@@ -239,6 +248,8 @@ class FranckHertzApp(tk.Tk):
         self._port_open = False
         self.controller.disconnect()
         self._hardware_banner_seen = False
+        self._paired_capability_seen = False
+        self._paired_mode_requested = False
         self._resume_after_protocol = False
         self.connect_button.configure(text="Connect")
         self.port_combo.configure(state="readonly")
@@ -384,6 +395,8 @@ class FranckHertzApp(tk.Tk):
                 self._handle_hardware_banner()
             elif text == config.PROTOCOL_CAPABILITY:
                 self._handle_protocol_capability()
+            elif text == config.PAIRED_MODE_ACK:
+                self._handle_paired_mode_ack()
             elif text.startswith("ERR,"):
                 self._set_status(f"Arduino reported: {text}", "error")
             elif text.startswith("#") or not text:
@@ -413,6 +426,8 @@ class FranckHertzApp(tk.Tk):
             self.start_button.configure(state=tk.DISABLED)
             self.stop_button.configure(state=tk.DISABLED)
         self._hardware_banner_seen = True
+        self._paired_capability_seen = False
+        self._paired_mode_requested = False
         self._set_led("waiting")
         self._set_status(
             "Modern Lab shield detected; verifying paired-channel firmware…",
@@ -423,8 +438,27 @@ class FranckHertzApp(tk.Tk):
         """Enable acquisition only after the paired record format is confirmed."""
 
         self._hardware_banner_seen = True
+        self._paired_capability_seen = True
+        if self.controller.device_ready or self._paired_mode_requested:
+            return
+        self._paired_mode_requested = True
+        self._set_status(
+            "Compatible firmware detected; selecting paired-channel mode…",
+            "waiting",
+        )
+        try:
+            self._write(config.PAIRED_MODE_COMMAND)
+        except ConnectionError as exc:
+            self._event_queue.put(("error", f"Mode selection failed: {exc}"))
+
+    def _handle_paired_mode_ack(self) -> None:
+        """Finish setup only after the firmware confirms paired mode."""
+
+        if not self._paired_capability_seen:
+            return
         resume_after_reset = self._resume_after_protocol
         self._resume_after_protocol = False
+        self._paired_mode_requested = False
         self.controller.mark_device_ready()
         self._cancel_handshake_timeout()
         self._cancel_identity_probe()

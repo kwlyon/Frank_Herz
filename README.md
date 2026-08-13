@@ -15,14 +15,15 @@ The two independent low-gain signal paths used here are:
 | Tube drive monitor | J1 low-gain/1× path | AIN0 | `drive_*` |
 | Picoammeter analog output | J3 low-gain/1× path | AIN2 | `current_*` |
 
-The companion higher-gain paths reach AIN1 and AIN3 and are not used. Each paired record is produced by alternating AIN0 and AIN2 reads inside the averaging loop, minimizing channel-to-channel time skew.
+The companion higher-gain paths reach AIN1 and AIN3 and are not used by paired mode. Each paired record is produced by alternating AIN0 and AIN2 reads inside the averaging loop, minimizing channel-to-channel time skew.
 
 The ADS1115 has four inputs numbered AIN0 through AIN3 (there is no AIN4).
 Schematic tracing shows that the first BNC feeds AIN0/AIN1 and the second BNC
-feeds AIN2/AIN3. The legacy V4 Recorder comments label AIN0 and AIN2 as `1x`
-and `10x`; that comment conflicts with the dual-board schematic. Those two
-channels are the lower-gain paths of the two separate BNC inputs, which is why
-this application deliberately pairs AIN0 with AIN2.
+feeds AIN2/AIN3. A comment in the legacy V4 Recorder labels AIN0 and AIN2 as
+`1x` and `10x`, but its actual code selects channel numbers 0 and 1. The
+universal firmware preserves that real legacy behavior: `1x` reads AIN0 and
+`10x` reads AIN1, the two gain paths for the first BNC. Franck-Hertz paired mode
+instead reads AIN0 and AIN2, the lower-gain paths for the two separate BNCs.
 
 The ADS1115 uses `GAIN_TWO`, a ±2.048 V converter range with 62.5 µV/count. In single-ended operation, signals must remain between ground and the allowed positive input limit. **Never connect the high-voltage tube drive directly to the shield.** Use an isolated/appropriate monitor output or a properly rated external divider, and verify the voltage at the shield input with a meter.
 
@@ -57,7 +58,30 @@ Install the Arduino libraries:
 - `Adafruit ADS1X15`
 - its normal `Adafruit BusIO` dependency
 
-Open and upload [`arduino/Frank_Herz_DAQ/Frank_Herz_DAQ.ino`](arduino/Frank_Herz_DAQ/Frank_Herz_DAQ.ino) to the Arduino Uno. The firmware and Python application agree on:
+Open and upload [`arduino/Frank_Herz_DAQ/Frank_Herz_DAQ.ino`](arduino/Frank_Herz_DAQ/Frank_Herz_DAQ.ino) to the Arduino Uno. This is one universal firmware image for both applications; stations do not need to reflash a device when moving it between `SerialPlotter` and `Frank_Herz`.
+
+The firmware deliberately starts in legacy mode after every reset. It therefore
+works with the unmodified `SerialPlotter` handshake and two-field parser. The
+Franck-Hertz application verifies the firmware capability, explicitly requests
+paired mode, waits for confirmation, and only then enables acquisition.
+
+Compatibility is:
+
+| Client | Mode selection | Channels | Stream record |
+| --- | --- | --- | --- |
+| Existing `SerialPlotter` / `recorder4.py` | Default legacy mode; `1x` or `10x` also selects legacy mode | AIN0 (`1x`) or AIN1 (`10x`) on J1 | `time_ms,value` |
+| `Frank_Herz` 1.0.2+ | Sends `mode,paired` after capability verification | AIN0 on J1 plus AIN2 on J3 | `DATA,time_ms,drive_raw,current_raw,drive_adc_v,current_adc_v` |
+
+The original V4 Recorder behavior retained in legacy mode includes:
+
+- 115200-baud USB serial and newline-terminated commands
+- 9600-baud SoftwareSerial passthrough on A0/A1 for unrecognized commands
+- ADS1115 address `0x49`, `GAIN_TWO`, and the original AIN0/AIN1 gain selection
+- `run`, `stop`, `delay,N`, `avg,N`, `1x`, `10x`, `scale,N`, `sf`, and `idn?`
+- the EEPROM-backed scale factor and its original `1.8 / 1024` initialization
+- two-field `millis(),value` records with the original scaled-millivolt calculation
+
+The firmware and Franck-Hertz Python application agree on:
 
 - 115200 baud
 - newline-terminated ASCII
@@ -65,13 +89,14 @@ Open and upload [`arduino/Frank_Herz_DAQ/Frank_Herz_DAQ.ino`](arduino/Frank_Herz
 - `GAIN_TWO` (±2.048 V, 62.5 µV/count)
 - drive on AIN0 followed by picoammeter output on AIN2
 - shared hardware banner: `Modern Lab Data Acquisition Shield` (the same banner used by `SerialPlotter`)
-- paired-protocol capability: `#protocol,franck-hertz-paired,1`
+- paired-protocol capability: `#protocol,franck-hertz-paired,2`
 
 The shared banner identifies the physical shield, not the application mode. The
-Franck-Hertz app enables acquisition only after it also receives the paired
-capability line. If the original single-channel Recorder firmware is still
-installed, the app reports that the shield was found and asks for the included
-Franck-Hertz firmware rather than presenting a false ready state.
+Franck-Hertz app enables acquisition only after it receives the version-2
+paired capability and the firmware acknowledges `#mode,paired`. If the original
+single-channel Recorder firmware is installed, the app reports that the shield
+was found and asks for the current universal firmware rather than presenting a
+false ready state.
 
 The data record is:
 
@@ -89,11 +114,17 @@ Supported commands are:
 
 | Command | Meaning |
 | --- | --- |
-| `run` | Start/resume paired records |
+| `mode,paired` | Select paired Franck-Hertz records and reply `#mode,paired` |
+| `mode,legacy` | Select legacy SerialPlotter records and reply `#mode,legacy` |
+| `mode?` | Report the current stream mode |
+| `run` | Start/resume records in the selected mode |
 | `stop` | Pause records |
-| `avg,N` | Average N sequential read pairs (`1..1000`) |
-| `delay,N` | Minimum record interval in milliseconds (`10..10000`) |
-| `idn?` | Repeat the shared device banner and paired-protocol capability |
+| `avg,N` | Set the number of ADC readings to average (`N >= 1`) |
+| `delay,N` | Set the minimum record interval in milliseconds (`N > 0`) |
+| `1x` | Select legacy mode and the J1 AIN0 path |
+| `10x` | Select legacy mode and the J1 AIN1 path |
+| `scale,N` / `sf` | Set or report the persistent legacy scaling factor |
+| `idn?` | Repeat the shared device banner, capability, and command list |
 
 Acknowledgements start with `#`; firmware errors start with `ERR,`. The app sends
 periodic `idn?` queries while connecting, so it can recover if the Arduino's

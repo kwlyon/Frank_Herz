@@ -9,8 +9,10 @@ BAUD_RATE = 115_200
 # The banner identifies the physical Modern Lab shield and intentionally matches
 # SerialPlotter. A separate capability line identifies paired Franck-Hertz data.
 HANDSHAKE_BANNER = "Modern Lab Data Acquisition Shield"
-PROTOCOL_CAPABILITY = "#protocol,franck-hertz-paired,1"
+PROTOCOL_CAPABILITY = "#protocol,franck-hertz-paired,2"
 IDENTIFY_COMMAND = b"idn?\n"
+PAIRED_MODE_COMMAND = b"mode,paired\n"
+PAIRED_MODE_ACK = "#mode,paired"
 START_COMMAND = b"run\n"
 STOP_COMMAND = b"stop\n"
 LINE_ENDING = b"\n"

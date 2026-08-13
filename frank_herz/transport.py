@@ -130,6 +130,8 @@ class SimulatorTransport:
         self._rng = random.Random(814_1935)
         self._averages = config.DEFAULT_AVERAGES
         self._interval_ms = config.DEFAULT_SAMPLE_INTERVAL_MS
+        self._mode = "legacy"
+        self._legacy_channel = 0
 
     def open(self, port: str = config.SIMULATOR_PORT, baud: int = config.BAUD_RATE) -> None:
         del port, baud
@@ -138,6 +140,8 @@ class SimulatorTransport:
         self._running.clear()
         self._opened = True
         self._started_at = time.perf_counter()
+        self._mode = "legacy"
+        self._legacy_channel = 0
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
         self._on_line(config.HANDSHAKE_BANNER.encode("ascii"))
@@ -158,16 +162,31 @@ class SimulatorTransport:
             self._on_line(b"#stop")
         elif command.startswith("avg,"):
             try:
-                self._averages = max(1, min(1000, int(command.split(",", 1)[1])))
-                self._on_line(f"#avg,{self._averages}".encode("ascii"))
+                requested = int(command.split(",", 1)[1])
+                self._averages = max(1, min(65_535, requested))
+                self._on_line(f"#avg{self._averages}".encode("ascii"))
             except ValueError:
                 self._on_line(b"ERR,BAD_AVG")
         elif command.startswith("delay,"):
             try:
-                self._interval_ms = max(10, min(10_000, int(command.split(",", 1)[1])))
-                self._on_line(f"#delay,{self._interval_ms}".encode("ascii"))
+                self._interval_ms = max(1, int(command.split(",", 1)[1]))
+                self._on_line(f"#delay{self._interval_ms}".encode("ascii"))
             except ValueError:
                 self._on_line(b"ERR,BAD_DELAY")
+        elif command == "1x":
+            self._mode = "legacy"
+            self._legacy_channel = 0
+            self._on_line(b"#1x")
+        elif command == "10x":
+            self._mode = "legacy"
+            self._legacy_channel = 1
+            self._on_line(b"#10x")
+        elif command == "mode,legacy":
+            self._mode = "legacy"
+            self._on_line(b"#mode,legacy")
+        elif command == "mode,paired":
+            self._mode = "paired"
+            self._on_line(config.PAIRED_MODE_ACK.encode("ascii"))
         elif command == "idn?":
             self._on_line(config.HANDSHAKE_BANNER.encode("ascii"))
             self._on_line(config.PROTOCOL_CAPABILITY.encode("ascii"))
@@ -226,6 +245,14 @@ class SimulatorTransport:
         drive_raw = drive_adc_v / config.ADS1115_VOLTS_PER_COUNT
         current_raw = current_adc_v / config.ADS1115_VOLTS_PER_COUNT
         elapsed_ms = int(elapsed_s * 1000.0)
+        if self._mode == "legacy":
+            legacy_adc_v = drive_adc_v
+            if self._legacy_channel == 1:
+                legacy_adc_v = min(
+                    config.ADS1115_FULL_SCALE_VOLTS, drive_adc_v * 10.0
+                )
+            selected_mv = legacy_adc_v * 1000.0
+            return f"{elapsed_ms},{selected_mv:.6f}".encode("ascii")
         return (
             f"DATA,{elapsed_ms},{drive_raw:.3f},{current_raw:.3f},"
             f"{drive_adc_v:.6f},{current_adc_v:.6f}"
