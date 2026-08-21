@@ -219,14 +219,36 @@ def downsample_for_display(
 ) -> tuple[list[float], list[float]]:
     """Return a representative plot view while retaining every export row."""
 
-    materialized = tuple(points)
-    if not materialized:
-        return [], []
-    stride = max(1, math.ceil(len(materialized) / maximum))
-    selected = materialized[::stride]
-    if selected[-1] is not materialized[-1]:
-        selected += (materialized[-1],)
+    selected = _select_points_for_display(points, maximum)
     return (
         [point.drive_voltage_v for point in selected],
         [point.tube_current_pa for point in selected],
     )
+
+
+def downsample_for_strip_recorder(
+    points: Iterable[DataPoint], maximum: int = config.MAX_DISPLAY_POINTS
+) -> tuple[list[float], list[float], list[float]]:
+    """Return elapsed time and both acquired channels for the strip view."""
+
+    selected = _select_points_for_display(points, maximum)
+    return (
+        [point.elapsed_ms / 1000.0 for point in selected],
+        [point.drive_voltage_v for point in selected],
+        [point.tube_current_pa for point in selected],
+    )
+
+
+def _select_points_for_display(
+    points: Iterable[DataPoint], maximum: int
+) -> tuple[DataPoint, ...]:
+    """Select evenly spaced points and always retain the newest sample."""
+
+    materialized = tuple(points)
+    if not materialized:
+        return ()
+    stride = max(1, math.ceil(len(materialized) / maximum))
+    selected = materialized[::stride]
+    if selected[-1] is not materialized[-1]:
+        selected += (materialized[-1],)
+    return selected

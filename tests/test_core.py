@@ -6,9 +6,12 @@ from frank_herz import config
 from frank_herz.core import (
     AcquisitionController,
     Calibration,
+    DataPoint,
     Dataset,
     ProtocolError,
     convert_sample,
+    downsample_for_display,
+    downsample_for_strip_recorder,
     parse_data_line,
 )
 
@@ -106,6 +109,33 @@ class AcquisitionStateTests(unittest.TestCase):
         dataset.append(convert_sample(raw, Calibration()))
         with self.assertRaises(OverflowError):
             dataset.append(convert_sample(raw, Calibration()))
+
+
+class DisplayDownsamplingTests(unittest.TestCase):
+    def test_xy_and_strip_views_select_the_same_points(self) -> None:
+        points = tuple(
+            DataPoint(
+                elapsed_ms=index * 250,
+                drive_voltage_v=float(index),
+                tube_current_pa=float(index * 10),
+                drive_adc_v=0.0,
+                current_adc_v=0.0,
+                drive_adc_counts=0.0,
+                current_adc_counts=0.0,
+            )
+            for index in range(7)
+        )
+
+        drive_xy, current_xy = downsample_for_display(points, maximum=3)
+        times, drive_strip, current_strip = downsample_for_strip_recorder(
+            points, maximum=3
+        )
+
+        self.assertEqual(drive_xy, [0.0, 3.0, 6.0])
+        self.assertEqual(current_xy, [0.0, 30.0, 60.0])
+        self.assertEqual(times, [0.0, 0.75, 1.5])
+        self.assertEqual(drive_strip, drive_xy)
+        self.assertEqual(current_strip, current_xy)
 
 
 if __name__ == "__main__":

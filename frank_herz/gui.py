@@ -20,9 +20,15 @@ from .core import (
     Calibration,
     DataPoint,
     downsample_for_display,
+    downsample_for_strip_recorder,
 )
 from .export import export_xlsx
 from .transport import SerialTransport, SimulatorTransport
+
+
+XY_PLOT_MODE = "X–Y Plot"
+STRIP_RECORDER_MODE = "Strip Recorder"
+PLOT_MODES = (XY_PLOT_MODE, STRIP_RECORDER_MODE)
 
 
 class PlotNavigationToolbar(NavigationToolbar2Tk):
@@ -59,6 +65,7 @@ class FranckHertzApp(tk.Tk):
         self._closing = False
         self._port_open = False
         self.autoscale_var = tk.BooleanVar(value=True)
+        self.plot_mode_var = tk.StringVar(value=XY_PLOT_MODE)
         self.controller = AcquisitionController(
             sender=self._write,
             calibration=Calibration(),
@@ -121,6 +128,21 @@ class FranckHertzApp(tk.Tk):
         self.export_button.grid(row=0, column=8)
         controls.columnconfigure(9, weight=1)
 
+        ttk.Label(controls, text="Plot mode:").grid(
+            row=1, column=1, sticky="w", pady=(8, 0)
+        )
+        self.plot_mode_combo = ttk.Combobox(
+            controls,
+            width=20,
+            state="readonly",
+            textvariable=self.plot_mode_var,
+            values=PLOT_MODES,
+        )
+        self.plot_mode_combo.grid(
+            row=1, column=2, sticky="w", padx=(5, 6), pady=(8, 0)
+        )
+        self.plot_mode_combo.bind("<<ComboboxSelected>>", self._change_plot_mode)
+
         status_frame = ttk.Frame(self, padding=(12, 2, 12, 4))
         status_frame.pack(fill=tk.X)
         self.status_var = tk.StringVar(value="Disconnected")
@@ -144,6 +166,7 @@ class FranckHertzApp(tk.Tk):
 
         self.figure = Figure(figsize=(10.8, 6.2), dpi=100, constrained_layout=True)
         self.axes = self.figure.add_subplot(111)
+        self.secondary_axes = self.axes.twinx()
         self.axes.set_title("Franck-Hertz Characteristic")
         self.axes.set_xlabel("Drive Voltage (V)")
         self.axes.set_ylabel("Tube Current (pA)")
@@ -158,7 +181,30 @@ class FranckHertzApp(tk.Tk):
             markersize=2.2,
             markeredgewidth=0,
         )
+        (self.drive_time_line,) = self.axes.plot(
+            [],
+            [],
+            color="#145DA0",
+            linewidth=1.35,
+            label="Drive Voltage",
+            visible=False,
+        )
+        (self.current_time_line,) = self.secondary_axes.plot(
+            [],
+            [],
+            color="#C43B3B",
+            linewidth=1.35,
+            label="Tube Current",
+            visible=False,
+        )
+        self.strip_legend = self.axes.legend(
+            handles=(self.drive_time_line, self.current_time_line),
+            loc="upper left",
+        )
+        self.strip_legend.set_visible(False)
+        self.secondary_axes.set_visible(False)
         self.axes.margins(x=0.05, y=0.08)
+        self.secondary_axes.margins(y=0.08)
         plot_frame = ttk.Frame(self, padding=(10, 2, 10, 8))
         plot_frame.pack(fill=tk.BOTH, expand=True)
         self.canvas = FigureCanvasTkAgg(self.figure, master=plot_frame)
@@ -188,6 +234,42 @@ class FranckHertzApp(tk.Tk):
         # autoscaling so incoming samples do not immediately undo the view.
         self.axes.callbacks.connect("xlim_changed", self._manual_limits_changed)
         self.axes.callbacks.connect("ylim_changed", self._manual_limits_changed)
+        self.secondary_axes.callbacks.connect(
+            "ylim_changed", self._manual_limits_changed
+        )
+
+    def _change_plot_mode(self, _event=None) -> None:
+        """Switch the displayed artists without changing acquisition or data."""
+
+        mode = self.plot_mode_var.get()
+        if mode not in PLOT_MODES:
+            mode = XY_PLOT_MODE
+            self.plot_mode_var.set(mode)
+        strip_mode = mode == STRIP_RECORDER_MODE
+
+        self.plot_line.set_visible(not strip_mode)
+        self.drive_time_line.set_visible(strip_mode)
+        self.current_time_line.set_visible(strip_mode)
+        self.secondary_axes.set_visible(strip_mode)
+        self.strip_legend.set_visible(strip_mode)
+
+        if strip_mode:
+            self.axes.set_title("Two-Channel Strip Recorder")
+            self.axes.set_xlabel("Elapsed Time (s)")
+            self.axes.set_ylabel("Drive Voltage (V)", color="#145DA0")
+            self.axes.tick_params(axis="y", colors="#145DA0")
+            self.secondary_axes.set_ylabel("Tube Current (pA)", color="#C43B3B")
+            self.secondary_axes.tick_params(axis="y", colors="#C43B3B")
+        else:
+            self.axes.set_title("Franck-Hertz Characteristic")
+            self.axes.set_xlabel("Drive Voltage (V)")
+            self.axes.set_ylabel("Tube Current (pA)", color="black")
+            self.axes.tick_params(axis="y", colors="black")
+
+        self.autoscale_var.set(True)
+        self._last_plotted_count = -1
+        self.toolbar.update()
+        self._redraw_plot(force=True)
 
     def _refresh_ports(self) -> None:
         previous = self.port_combo.get()
@@ -528,24 +610,53 @@ class FranckHertzApp(tk.Tk):
         count = len(points)
         if not force and count == self._last_plotted_count:
             return
-        x_values, y_values = downsample_for_display(points)
-        self.plot_line.set_data(x_values, y_values)
         self.count_var.set(f"{count:,} point" + ("" if count == 1 else "s"))
         self._last_plotted_count = count
-        if x_values and y_values:
-            self.axes.relim()
-            if self.autoscale_var.get():
-                self._apply_autoscale(x_values, y_values)
+
+        if self.plot_mode_var.get() == STRIP_RECORDER_MODE:
+            time_values, drive_values, current_values = (
+                downsample_for_strip_recorder(points)
+            )
+            self.plot_line.set_data([], [])
+            self.drive_time_line.set_data(time_values, drive_values)
+            self.current_time_line.set_data(time_values, current_values)
+            if time_values:
+                self.axes.relim()
+                self.secondary_axes.relim()
+                if self.autoscale_var.get():
+                    self._apply_strip_autoscale(
+                        time_values, drive_values, current_values
+                    )
+            else:
+                self._reset_empty_plot()
         else:
-            self._changing_plot_limits = True
-            try:
-                self.axes.set_xlim(0.0, 1.0)
-                self.axes.set_ylim(0.0, 1.0)
-                self.axes.set_autoscalex_on(True)
-                self.axes.set_autoscaley_on(True)
-            finally:
-                self._changing_plot_limits = False
+            x_values, y_values = downsample_for_display(points)
+            self.plot_line.set_data(x_values, y_values)
+            self.drive_time_line.set_data([], [])
+            self.current_time_line.set_data([], [])
+            if x_values and y_values:
+                self.axes.relim()
+                self.secondary_axes.relim()
+                if self.autoscale_var.get():
+                    self._apply_autoscale(x_values, y_values)
+            else:
+                self._reset_empty_plot()
         self.canvas.draw_idle()
+
+    def _reset_empty_plot(self) -> None:
+        """Restore predictable limits for an empty plot in either mode."""
+
+        self._changing_plot_limits = True
+        try:
+            self.axes.set_xlim(0.0, 1.0)
+            self.axes.set_ylim(0.0, 1.0)
+            self.secondary_axes.set_ylim(0.0, 1.0)
+            self.axes.set_autoscalex_on(True)
+            self.axes.set_autoscaley_on(True)
+            self.secondary_axes.set_autoscalex_on(True)
+            self.secondary_axes.set_autoscaley_on(True)
+        finally:
+            self._changing_plot_limits = False
 
     def _apply_autoscale(
         self, x_values: list[float], y_values: list[float]
@@ -566,6 +677,34 @@ class FranckHertzApp(tk.Tk):
         finally:
             self._changing_plot_limits = False
 
+    def _apply_strip_autoscale(
+        self,
+        time_values: list[float],
+        drive_values: list[float],
+        current_values: list[float],
+    ) -> None:
+        """Fit the shared time axis and each strip-recorder channel independently."""
+
+        self._changing_plot_limits = True
+        try:
+            self.axes.set_autoscalex_on(True)
+            self.axes.set_autoscaley_on(True)
+            self.secondary_axes.set_autoscalex_on(True)
+            self.secondary_axes.set_autoscaley_on(True)
+            self.axes.relim()
+            self.secondary_axes.relim()
+            self.axes.autoscale_view()
+            self.secondary_axes.autoscale_view(scalex=False, scaley=True)
+            self._pad_equal_range(time_values, self.axes.set_xlim)
+            self._pad_equal_range(drive_values, self.axes.set_ylim)
+            self._pad_equal_range(current_values, self.secondary_axes.set_ylim)
+            self.axes.set_autoscalex_on(True)
+            self.axes.set_autoscaley_on(True)
+            self.secondary_axes.set_autoscalex_on(True)
+            self.secondary_axes.set_autoscaley_on(True)
+        finally:
+            self._changing_plot_limits = False
+
     def _manual_limits_changed(self, _axes) -> None:
         """Hold a user-selected pan/zoom instead of overwriting it live."""
 
@@ -574,6 +713,8 @@ class FranckHertzApp(tk.Tk):
         self.autoscale_var.set(False)
         self.axes.set_autoscalex_on(False)
         self.axes.set_autoscaley_on(False)
+        self.secondary_axes.set_autoscalex_on(False)
+        self.secondary_axes.set_autoscaley_on(False)
 
     def _toggle_autoscale(self) -> None:
         if self.autoscale_var.get():
@@ -581,6 +722,8 @@ class FranckHertzApp(tk.Tk):
         else:
             self.axes.set_autoscalex_on(False)
             self.axes.set_autoscaley_on(False)
+            self.secondary_axes.set_autoscalex_on(False)
+            self.secondary_axes.set_autoscaley_on(False)
 
     def _home_plot(self) -> None:
         """Fit the complete dataset and resume live autoscaling."""
@@ -680,6 +823,12 @@ def run_gui_smoke_test() -> None:
     failures: list[str] = []
 
     def connect() -> None:
+        app.plot_mode_var.set(STRIP_RECORDER_MODE)
+        app._change_plot_mode()
+        if app.axes.get_xlabel() != "Elapsed Time (s)":
+            failures.append("strip mode could not be selected before acquisition")
+        app.plot_mode_var.set(XY_PLOT_MODE)
+        app._change_plot_mode()
         app._connect()
 
     def start() -> None:
@@ -687,6 +836,35 @@ def run_gui_smoke_test() -> None:
             failures.append("simulator handshake was not processed")
         else:
             app._start_acquisition()
+
+    def switch_plot_modes_while_running() -> None:
+        before = app.controller.dataset.snapshot()
+        if not before or not app.controller.running:
+            failures.append("acquisition was not running before the plot-mode switch")
+            return
+
+        app.plot_mode_var.set(STRIP_RECORDER_MODE)
+        app._change_plot_mode()
+        if not app.controller.running or app.controller.dataset.snapshot() != before:
+            failures.append("strip-mode selection changed acquisition or stored data")
+        times = list(app.drive_time_line.get_xdata())
+        drive_values = list(app.drive_time_line.get_ydata())
+        current_values = list(app.current_time_line.get_ydata())
+        if not times or len(times) != len(drive_values) or len(times) != len(
+            current_values
+        ):
+            failures.append("strip mode did not display both channels against time")
+        if not app.secondary_axes.get_visible() or not app.strip_legend.get_visible():
+            failures.append("strip-mode secondary axis or legend was not visible")
+
+        app.plot_mode_var.set(XY_PLOT_MODE)
+        app._change_plot_mode()
+        if not app.controller.running or app.controller.dataset.snapshot() != before:
+            failures.append("X–Y selection changed acquisition or stored data")
+        if app.secondary_axes.get_visible() or app.axes.get_xlabel() != "Drive Voltage (V)":
+            failures.append("X–Y plot was not restored after live switching")
+        if not len(app.plot_line.get_xdata()) or not len(app.plot_line.get_ydata()):
+            failures.append("X–Y data was not restored after live switching")
 
     retained_after_stop = [0]
 
@@ -752,6 +930,7 @@ def run_gui_smoke_test() -> None:
 
     app.after(50, connect)
     app.after(250, start)
+    app.after(550, switch_plot_modes_while_running)
     app.after(850, stop_and_check_retention)
     app.after(1250, check_resume_and_reset)
     app.after(1500, check_clear_confirmation)
