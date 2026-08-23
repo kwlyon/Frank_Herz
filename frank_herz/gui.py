@@ -28,7 +28,7 @@ from .transport import SerialTransport, SimulatorTransport
 
 XY_PLOT_MODE = "X–Y Plot"
 STRIP_RECORDER_MODE = "Strip Recorder"
-PLOT_MODES = (XY_PLOT_MODE, STRIP_RECORDER_MODE)
+PLOT_MODES = (STRIP_RECORDER_MODE, XY_PLOT_MODE)
 
 
 class PlotNavigationToolbar(NavigationToolbar2Tk):
@@ -65,7 +65,7 @@ class FranckHertzApp(tk.Tk):
         self._closing = False
         self._port_open = False
         self.autoscale_var = tk.BooleanVar(value=True)
-        self.plot_mode_var = tk.StringVar(value=XY_PLOT_MODE)
+        self.plot_mode_var = tk.StringVar(value=STRIP_RECORDER_MODE)
         self.controller = AcquisitionController(
             sender=self._write,
             calibration=Calibration(),
@@ -181,27 +181,22 @@ class FranckHertzApp(tk.Tk):
             markersize=2.2,
             markeredgewidth=0,
         )
-        (self.drive_time_line,) = self.axes.plot(
+        (self.current_time_line,) = self.axes.plot(
             [],
             [],
             color="#145DA0",
             linewidth=1.35,
-            label="Drive Voltage",
+            label="Tube Current",
             visible=False,
         )
-        (self.current_time_line,) = self.secondary_axes.plot(
+        (self.drive_time_line,) = self.secondary_axes.plot(
             [],
             [],
             color="#C43B3B",
             linewidth=1.35,
-            label="Tube Current",
+            label="Drive Voltage",
             visible=False,
         )
-        self.strip_legend = self.axes.legend(
-            handles=(self.drive_time_line, self.current_time_line),
-            loc="upper left",
-        )
-        self.strip_legend.set_visible(False)
         self.secondary_axes.set_visible(False)
         self.axes.margins(x=0.05, y=0.08)
         self.secondary_axes.margins(y=0.08)
@@ -237,13 +232,14 @@ class FranckHertzApp(tk.Tk):
         self.secondary_axes.callbacks.connect(
             "ylim_changed", self._manual_limits_changed
         )
+        self._change_plot_mode()
 
     def _change_plot_mode(self, _event=None) -> None:
         """Switch the displayed artists without changing acquisition or data."""
 
         mode = self.plot_mode_var.get()
         if mode not in PLOT_MODES:
-            mode = XY_PLOT_MODE
+            mode = STRIP_RECORDER_MODE
             self.plot_mode_var.set(mode)
         strip_mode = mode == STRIP_RECORDER_MODE
 
@@ -251,14 +247,13 @@ class FranckHertzApp(tk.Tk):
         self.drive_time_line.set_visible(strip_mode)
         self.current_time_line.set_visible(strip_mode)
         self.secondary_axes.set_visible(strip_mode)
-        self.strip_legend.set_visible(strip_mode)
 
         if strip_mode:
             self.axes.set_title("Two-Channel Strip Recorder")
             self.axes.set_xlabel("Elapsed Time (s)")
-            self.axes.set_ylabel("Drive Voltage (V)", color="#145DA0")
+            self.axes.set_ylabel("Tube Current (pA)", color="#145DA0")
             self.axes.tick_params(axis="y", colors="#145DA0")
-            self.secondary_axes.set_ylabel("Tube Current (pA)", color="#C43B3B")
+            self.secondary_axes.set_ylabel("Drive Voltage (V)", color="#C43B3B")
             self.secondary_axes.tick_params(axis="y", colors="#C43B3B")
         else:
             self.axes.set_title("Franck-Hertz Characteristic")
@@ -696,8 +691,8 @@ class FranckHertzApp(tk.Tk):
             self.axes.autoscale_view()
             self.secondary_axes.autoscale_view(scalex=False, scaley=True)
             self._pad_equal_range(time_values, self.axes.set_xlim)
-            self._pad_equal_range(drive_values, self.axes.set_ylim)
-            self._pad_equal_range(current_values, self.secondary_axes.set_ylim)
+            self._pad_equal_range(current_values, self.axes.set_ylim)
+            self._pad_equal_range(drive_values, self.secondary_axes.set_ylim)
             self.axes.set_autoscalex_on(True)
             self.axes.set_autoscaley_on(True)
             self.secondary_axes.set_autoscalex_on(True)
@@ -823,11 +818,22 @@ def run_gui_smoke_test() -> None:
     failures: list[str] = []
 
     def connect() -> None:
-        app.plot_mode_var.set(STRIP_RECORDER_MODE)
-        app._change_plot_mode()
-        if app.axes.get_xlabel() != "Elapsed Time (s)":
-            failures.append("strip mode could not be selected before acquisition")
+        if app.plot_mode_var.get() != STRIP_RECORDER_MODE:
+            failures.append("strip recorder was not the default plot mode")
+        if tuple(app.plot_mode_combo.cget("values")) != PLOT_MODES:
+            failures.append("plot-mode dropdown order was not strip recorder first")
+        if app.axes.get_ylabel() != "Tube Current (pA)":
+            failures.append("tube current was not on the default left strip axis")
+        if app.secondary_axes.get_ylabel() != "Drive Voltage (V)":
+            failures.append("drive voltage was not on the default right strip axis")
+        if app.axes.get_legend() is not None:
+            failures.append("strip mode displayed an unnecessary legend box")
+
         app.plot_mode_var.set(XY_PLOT_MODE)
+        app._change_plot_mode()
+        if app.axes.get_xlabel() != "Drive Voltage (V)":
+            failures.append("X–Y mode could not be selected before acquisition")
+        app.plot_mode_var.set(STRIP_RECORDER_MODE)
         app._change_plot_mode()
         app._connect()
 
@@ -854,8 +860,16 @@ def run_gui_smoke_test() -> None:
             current_values
         ):
             failures.append("strip mode did not display both channels against time")
-        if not app.secondary_axes.get_visible() or not app.strip_legend.get_visible():
-            failures.append("strip-mode secondary axis or legend was not visible")
+        if not app.secondary_axes.get_visible():
+            failures.append("strip-mode secondary axis was not visible")
+        if app.axes.get_ylabel() != "Tube Current (pA)":
+            failures.append("tube current was not on the left strip axis")
+        if app.secondary_axes.get_ylabel() != "Drive Voltage (V)":
+            failures.append("drive voltage was not on the right strip axis")
+        if app.current_time_line.get_color() != "#145DA0":
+            failures.append("tube-current strip trace was not blue")
+        if app.drive_time_line.get_color() != "#C43B3B":
+            failures.append("drive-voltage strip trace was not red")
 
         app.plot_mode_var.set(XY_PLOT_MODE)
         app._change_plot_mode()
