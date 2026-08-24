@@ -9,6 +9,7 @@ import queue
 import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from types import SimpleNamespace
 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
@@ -21,6 +22,7 @@ from .core import (
     DataPoint,
     downsample_for_display,
     downsample_for_strip_recorder,
+    nearest_xy_point,
 )
 from .export import export_xlsx
 from .transport import SerialTransport, SimulatorTransport
@@ -62,9 +64,15 @@ class FranckHertzApp(tk.Tk):
         self._resume_after_protocol = False
         self._last_plotted_count = -1
         self._changing_plot_limits = False
+        self._cursor_dragging = False
+        self._cursor_target_x: float | None = None
+        self._cursor_x_values: list[float] = []
+        self._cursor_y_values: list[float] = []
+        self._cursor_selected_point: tuple[float, float] | None = None
         self._closing = False
         self._port_open = False
         self.autoscale_var = tk.BooleanVar(value=True)
+        self.cursor_visible_var = tk.BooleanVar(value=True)
         self.plot_mode_var = tk.StringVar(value=STRIP_RECORDER_MODE)
         self.controller = AcquisitionController(
             sender=self._write,
@@ -181,6 +189,43 @@ class FranckHertzApp(tk.Tk):
             markersize=2.2,
             markeredgewidth=0,
         )
+        self.cursor_line = self.axes.axvline(
+            0.0,
+            color="#E38B00",
+            linewidth=1.8,
+            linestyle="--",
+            alpha=0.95,
+            visible=False,
+            zorder=5,
+        )
+        (self.cursor_marker,) = self.axes.plot(
+            [],
+            [],
+            marker="o",
+            markersize=6.0,
+            markerfacecolor="#FFF4D6",
+            markeredgecolor="#C66E00",
+            markeredgewidth=1.3,
+            linestyle="none",
+            visible=False,
+            zorder=6,
+        )
+        self.cursor_annotation = self.axes.annotate(
+            "",
+            xy=(0.0, 0.0),
+            xytext=(11, 11),
+            textcoords="offset points",
+            fontsize=9,
+            color="#3F2A00",
+            bbox={
+                "boxstyle": "round,pad=0.3",
+                "facecolor": "#FFFDF6",
+                "edgecolor": "#D28A19",
+                "alpha": 0.92,
+            },
+            visible=False,
+            zorder=7,
+        )
         (self.current_time_line,) = self.axes.plot(
             [],
             [],
@@ -218,12 +263,24 @@ class FranckHertzApp(tk.Tk):
         )
         self.toolbar.update()
         self.toolbar.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Checkbutton(
+        self.autoscale_checkbutton = ttk.Checkbutton(
             navigation_frame,
             text="Auto-scale live",
             variable=self.autoscale_var,
             command=self._toggle_autoscale,
-        ).pack(side=tk.RIGHT, padx=(10, 4))
+        )
+        self.autoscale_checkbutton.pack(side=tk.RIGHT, padx=(10, 4))
+        self.cursor_checkbutton = ttk.Checkbutton(
+            navigation_frame,
+            text="Measurement cursor",
+            variable=self.cursor_visible_var,
+            command=self._toggle_measurement_cursor,
+        )
+        self.cursor_checkbutton.pack(side=tk.RIGHT, padx=(10, 2))
+
+        self.canvas.mpl_connect("button_press_event", self._cursor_mouse_press)
+        self.canvas.mpl_connect("motion_notify_event", self._cursor_mouse_move)
+        self.canvas.mpl_connect("button_release_event", self._cursor_mouse_release)
 
         # A toolbar pan/zoom changes the axes limits. That change pauses live
         # autoscaling so incoming samples do not immediately undo the view.
@@ -247,8 +304,11 @@ class FranckHertzApp(tk.Tk):
         self.drive_time_line.set_visible(strip_mode)
         self.current_time_line.set_visible(strip_mode)
         self.secondary_axes.set_visible(strip_mode)
+        self._cursor_dragging = False
 
         if strip_mode:
+            self.cursor_checkbutton.pack_forget()
+            self._hide_measurement_cursor(clear_data=True)
             self.axes.set_title("Two-Channel Strip Recorder")
             self.axes.set_xlabel("Elapsed Time (s)")
             self.axes.set_ylabel("Tube Current (pA)", color="#145DA0")
@@ -256,6 +316,8 @@ class FranckHertzApp(tk.Tk):
             self.secondary_axes.set_ylabel("Drive Voltage (V)", color="#C43B3B")
             self.secondary_axes.tick_params(axis="y", colors="#C43B3B")
         else:
+            if not self.cursor_checkbutton.winfo_manager():
+                self.cursor_checkbutton.pack(side=tk.RIGHT, padx=(10, 2))
             self.axes.set_title("Franck-Hertz Characteristic")
             self.axes.set_xlabel("Drive Voltage (V)")
             self.axes.set_ylabel("Tube Current (pA)", color="black")
@@ -265,6 +327,105 @@ class FranckHertzApp(tk.Tk):
         self._last_plotted_count = -1
         self.toolbar.update()
         self._redraw_plot(force=True)
+
+    def _toggle_measurement_cursor(self) -> None:
+        """Show or hide the measurement cursor in X-Y mode."""
+
+        if self.cursor_visible_var.get():
+            self._refresh_measurement_cursor()
+        else:
+            self._hide_measurement_cursor()
+        self.canvas.draw_idle()
+
+    def _refresh_measurement_cursor(self) -> None:
+        """Snap the cursor and its readout to the nearest displayed XY point."""
+
+        if (
+            self.plot_mode_var.get() != XY_PLOT_MODE
+            or not self.cursor_visible_var.get()
+            or not self._cursor_x_values
+        ):
+            self._hide_measurement_cursor()
+            return
+
+        if self._cursor_target_x is None:
+            self._cursor_target_x = self._cursor_x_values[-1]
+        selected = nearest_xy_point(
+            self._cursor_x_values,
+            self._cursor_y_values,
+            self._cursor_target_x,
+        )
+        if selected is None:
+            self._hide_measurement_cursor()
+            return
+
+        x_value, y_value = selected
+        self._cursor_selected_point = selected
+        self.cursor_line.set_data([x_value, x_value], [0.0, 1.0])
+        self.cursor_marker.set_data([x_value], [y_value])
+        self.cursor_annotation.xy = (x_value, y_value)
+        self.cursor_annotation.set_text(
+            f"Drive Voltage = {x_value:.5g} V\nFH Current = {y_value:.5g} pA"
+        )
+
+        x_low, x_high = self.axes.get_xlim()
+        y_low, y_high = self.axes.get_ylim()
+        place_left = x_value > (x_low + x_high) / 2.0
+        place_below = y_value > (y_low + y_high) / 2.0
+        self.cursor_annotation.set_position(
+            (-11 if place_left else 11, -11 if place_below else 11)
+        )
+        self.cursor_annotation.set_ha("right" if place_left else "left")
+        self.cursor_annotation.set_va("top" if place_below else "bottom")
+
+        self.cursor_line.set_visible(True)
+        self.cursor_marker.set_visible(True)
+        self.cursor_annotation.set_visible(True)
+
+    def _hide_measurement_cursor(self, clear_data: bool = False) -> None:
+        self.cursor_line.set_visible(False)
+        self.cursor_marker.set_visible(False)
+        self.cursor_annotation.set_visible(False)
+        self._cursor_selected_point = None
+        if clear_data:
+            # The primary X axis is elapsed time in Strip Recorder mode.  Empty
+            # cursor artists keep their previous drive-voltage coordinate from
+            # participating in the time-axis relimit operation.
+            self.cursor_line.set_data([], [])
+            self.cursor_marker.set_data([], [])
+
+    def _cursor_mouse_press(self, event) -> None:
+        """Begin a drag only when the visible cursor line is grabbed."""
+
+        if (
+            event.button != 1
+            or event.inaxes is not self.axes
+            or self.plot_mode_var.get() != XY_PLOT_MODE
+            or not self.cursor_line.get_visible()
+            or self.toolbar.mode
+            or event.x is None
+        ):
+            return
+        x_data = self.cursor_line.get_xdata()
+        if len(x_data) != 2:
+            return
+        cursor_pixel_x = self.axes.transData.transform((x_data[0], 0.0))[0]
+        if abs(event.x - cursor_pixel_x) <= 8.0:
+            self._cursor_dragging = True
+
+    def _cursor_mouse_move(self, event) -> None:
+        if not self._cursor_dragging or event.x is None:
+            return
+        if event.inaxes is self.axes and event.xdata is not None:
+            target_x = event.xdata
+        else:
+            target_x = self.axes.transData.inverted().transform((event.x, 0.0))[0]
+        self._cursor_target_x = float(target_x)
+        self._refresh_measurement_cursor()
+        self.canvas.draw_idle()
+
+    def _cursor_mouse_release(self, _event) -> None:
+        self._cursor_dragging = False
 
     def _refresh_ports(self) -> None:
         previous = self.port_combo.get()
@@ -437,6 +598,7 @@ class FranckHertzApp(tk.Tk):
         # not yet crossed the UI queue. A cancelled clear never discards data.
         self._discard_queued_data_lines()
         self.autoscale_var.set(True)
+        self._cursor_target_x = None
         self._last_plotted_count = -1
         self._redraw_plot(force=True)
         self._set_status("Current dataset and plot cleared.", "neutral")
@@ -612,6 +774,9 @@ class FranckHertzApp(tk.Tk):
             time_values, drive_values, current_values = (
                 downsample_for_strip_recorder(points)
             )
+            self._cursor_x_values = []
+            self._cursor_y_values = []
+            self._hide_measurement_cursor(clear_data=True)
             self.plot_line.set_data([], [])
             self.drive_time_line.set_data(time_values, drive_values)
             self.current_time_line.set_data(time_values, current_values)
@@ -626,6 +791,8 @@ class FranckHertzApp(tk.Tk):
                 self._reset_empty_plot()
         else:
             x_values, y_values = downsample_for_display(points)
+            self._cursor_x_values = x_values
+            self._cursor_y_values = y_values
             self.plot_line.set_data(x_values, y_values)
             self.drive_time_line.set_data([], [])
             self.current_time_line.set_data([], [])
@@ -634,7 +801,10 @@ class FranckHertzApp(tk.Tk):
                 self.secondary_axes.relim()
                 if self.autoscale_var.get():
                     self._apply_autoscale(x_values, y_values)
+                self._refresh_measurement_cursor()
             else:
+                self._cursor_target_x = None
+                self._hide_measurement_cursor(clear_data=True)
                 self._reset_empty_plot()
         self.canvas.draw_idle()
 
@@ -817,6 +987,13 @@ def run_gui_smoke_test() -> None:
     app.port_combo.set(config.SIMULATOR_PORT)
     failures: list[str] = []
 
+    def limits_include(values, limits) -> bool:
+        if not values:
+            return False
+        low, high = sorted(limits)
+        tolerance = max(1.0, abs(low), abs(high)) * 1e-9
+        return min(values) >= low - tolerance and max(values) <= high + tolerance
+
     def connect() -> None:
         if app.plot_mode_var.get() != STRIP_RECORDER_MODE:
             failures.append("strip recorder was not the default plot mode")
@@ -828,11 +1005,17 @@ def run_gui_smoke_test() -> None:
             failures.append("drive voltage was not on the default right strip axis")
         if app.axes.get_legend() is not None:
             failures.append("strip mode displayed an unnecessary legend box")
+        if app.cursor_checkbutton.winfo_manager():
+            failures.append("measurement-cursor control was visible in strip mode")
+        if app.cursor_line.get_visible() or app.cursor_annotation.get_visible():
+            failures.append("measurement cursor was visible in strip mode")
 
         app.plot_mode_var.set(XY_PLOT_MODE)
         app._change_plot_mode()
         if app.axes.get_xlabel() != "Drive Voltage (V)":
             failures.append("X–Y mode could not be selected before acquisition")
+        if app.cursor_checkbutton.winfo_manager() != "pack":
+            failures.append("measurement-cursor control was missing from X–Y mode")
         app.plot_mode_var.set(STRIP_RECORDER_MODE)
         app._change_plot_mode()
         app._connect()
@@ -870,6 +1053,16 @@ def run_gui_smoke_test() -> None:
             failures.append("tube-current strip trace was not blue")
         if app.drive_time_line.get_color() != "#C43B3B":
             failures.append("drive-voltage strip trace was not red")
+        if app.cursor_checkbutton.winfo_manager() or app.cursor_line.get_visible():
+            failures.append("measurement cursor remained available in strip mode")
+        if not app.autoscale_var.get():
+            failures.append("strip-mode live autoscaling was not enabled")
+        if not limits_include(times, app.axes.get_xlim()):
+            failures.append("strip-mode time autoscaling did not contain acquired data")
+        if not limits_include(current_values, app.axes.get_ylim()):
+            failures.append("strip-mode current autoscaling did not contain acquired data")
+        if not limits_include(drive_values, app.secondary_axes.get_ylim()):
+            failures.append("strip-mode drive autoscaling did not contain acquired data")
 
         app.plot_mode_var.set(XY_PLOT_MODE)
         app._change_plot_mode()
@@ -879,12 +1072,74 @@ def run_gui_smoke_test() -> None:
             failures.append("X–Y plot was not restored after live switching")
         if not len(app.plot_line.get_xdata()) or not len(app.plot_line.get_ydata()):
             failures.append("X–Y data was not restored after live switching")
+            return
+        if app.cursor_checkbutton.winfo_manager() != "pack":
+            failures.append("measurement-cursor control was not restored in X–Y mode")
+        if not app.cursor_line.get_visible() or not app.cursor_annotation.get_visible():
+            failures.append("measurement cursor did not appear on acquired X–Y data")
+        if not app.autoscale_var.get():
+            failures.append("X–Y live autoscaling was not enabled")
+
+        x_values = list(app.plot_line.get_xdata())
+        y_values = list(app.plot_line.get_ydata())
+        if not limits_include(x_values, app.axes.get_xlim()):
+            failures.append("X–Y drive autoscaling did not contain acquired data")
+        if not limits_include(y_values, app.axes.get_ylim()):
+            failures.append("X–Y current autoscaling did not contain acquired data")
+
+        app.cursor_visible_var.set(False)
+        app._toggle_measurement_cursor()
+        if app.cursor_line.get_visible() or app.cursor_annotation.get_visible():
+            failures.append("measurement-cursor control did not hide its artists")
+        app.cursor_visible_var.set(True)
+        app._toggle_measurement_cursor()
+        if not app.cursor_line.get_visible() or not app.cursor_annotation.get_visible():
+            failures.append("measurement-cursor control did not restore its artists")
+
+        app.canvas.draw()
+        current_x = app.cursor_line.get_xdata()[0]
+        target_x = min(x_values) if current_x != min(x_values) else max(x_values)
+        current_pixel_x = app.axes.transData.transform((current_x, 0.0))[0]
+        app._cursor_mouse_press(
+            SimpleNamespace(
+                button=1,
+                inaxes=app.axes,
+                x=current_pixel_x,
+                xdata=current_x,
+            )
+        )
+        if not app._cursor_dragging:
+            failures.append("measurement cursor could not be grabbed")
+        target_pixel_x = app.axes.transData.transform((target_x, 0.0))[0]
+        app._cursor_mouse_move(
+            SimpleNamespace(
+                inaxes=app.axes,
+                x=target_pixel_x,
+                xdata=target_x,
+            )
+        )
+        app._cursor_mouse_release(SimpleNamespace(button=1))
+        expected = nearest_xy_point(x_values, y_values, target_x)
+        if app._cursor_selected_point != expected:
+            failures.append("dragged cursor did not select the nearest plotted X–Y point")
+        if app._cursor_dragging:
+            failures.append("measurement cursor remained grabbed after mouse release")
+        if "Drive Voltage" not in app.cursor_annotation.get_text() or (
+            "FH Current" not in app.cursor_annotation.get_text()
+        ):
+            failures.append("measurement-cursor coordinate readout was incomplete")
 
     retained_after_stop = [0]
 
     def stop_and_check_retention() -> None:
         if not len(app.controller.dataset):
             failures.append("no simulated measurements reached the GUI")
+        live_x = list(app.plot_line.get_xdata())
+        live_y = list(app.plot_line.get_ydata())
+        if not limits_include(live_x, app.axes.get_xlim()) or not limits_include(
+            live_y, app.axes.get_ylim()
+        ):
+            failures.append("X–Y axes stopped autoscaling as new data arrived")
         app._stop_acquisition()
         retained_after_stop[0] = len(app.controller.dataset)
         if not retained_after_stop[0]:

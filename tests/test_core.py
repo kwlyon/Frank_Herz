@@ -12,6 +12,7 @@ from frank_herz.core import (
     convert_sample,
     downsample_for_display,
     downsample_for_strip_recorder,
+    nearest_xy_point,
     parse_data_line,
 )
 
@@ -136,6 +137,22 @@ class DisplayDownsamplingTests(unittest.TestCase):
         self.assertEqual(times, [0.0, 0.75, 1.5])
         self.assertEqual(drive_strip, drive_xy)
         self.assertEqual(current_strip, current_xy)
+
+    def test_measurement_cursor_selects_the_nearest_plotted_drive_voltage(self) -> None:
+        drive = [0.0, 1.5, 3.0, 4.5]
+        current = [10.0, 30.0, 20.0, 40.0]
+
+        self.assertEqual(nearest_xy_point(drive, current, 2.8), (3.0, 20.0))
+        self.assertEqual(nearest_xy_point(drive, current, -5.0), (0.0, 10.0))
+        self.assertEqual(nearest_xy_point([], [], 1.0), None)
+
+    def test_measurement_cursor_ties_retain_acquisition_order(self) -> None:
+        self.assertEqual(
+            nearest_xy_point([1.0, 3.0], [15.0, 35.0], 2.0),
+            (1.0, 15.0),
+        )
+        with self.assertRaises(ValueError):
+            nearest_xy_point([1.0], [], 1.0)
 
 
 if __name__ == "__main__":

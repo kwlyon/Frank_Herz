@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import threading
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Sequence
 
 from . import config
 
@@ -237,6 +237,32 @@ def downsample_for_strip_recorder(
         [point.drive_voltage_v for point in selected],
         [point.tube_current_pa for point in selected],
     )
+
+
+def nearest_xy_point(
+    x_values: Sequence[float],
+    y_values: Sequence[float],
+    target_x: float,
+) -> tuple[float, float] | None:
+    """Return the plotted point whose drive voltage is nearest ``target_x``.
+
+    Ties retain acquisition order.  The cursor deliberately selects from the
+    displayed data so its readout always identifies a point the student can
+    see, rather than reporting an arbitrary mouse coordinate.
+    """
+
+    if len(x_values) != len(y_values):
+        raise ValueError("X and Y display data must have the same length.")
+    if not x_values:
+        return None
+    if not math.isfinite(target_x):
+        raise ValueError("Cursor drive voltage must be finite.")
+
+    nearest_index = min(
+        range(len(x_values)),
+        key=lambda index: abs(x_values[index] - target_x),
+    )
+    return x_values[nearest_index], y_values[nearest_index]
 
 
 def _select_points_for_display(
