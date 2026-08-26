@@ -18,7 +18,7 @@ from frank_herz.core import (
 
 
 class ProtocolTests(unittest.TestCase):
-    def test_paired_record_and_unit_conversion(self) -> None:
+    def test_dual_channel_record_and_unit_conversion(self) -> None:
         raw = parse_data_line("DATA,125,1600,8000,0.100000,0.500000")
         point = convert_sample(
             raw,
@@ -36,13 +36,29 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(point.drive_adc_counts, 1600)
         self.assertEqual(point.current_adc_counts, 8000)
 
+    def test_protocol_v4_accepts_external_voltage_and_retains_adc_node_voltage(self) -> None:
+        raw = parse_data_line("DATA,125,16000,8000,10.000000,5.000000")
+        point = convert_sample(raw, Calibration())
+        self.assertAlmostEqual(point.drive_voltage_v, 10.0)
+        self.assertAlmostEqual(point.tube_current_pa, 5000.0)
+        self.assertAlmostEqual(point.drive_adc_v, 1.0)
+        self.assertAlmostEqual(point.current_adc_v, 0.5)
+
+    def test_adc_node_voltage_uses_each_active_range_independently(self) -> None:
+        raw = parse_data_line("DATA,125,16000,16000,10.000000,5.000000")
+        point = convert_sample(raw, Calibration(), 4.096, 0.512)
+        self.assertAlmostEqual(point.drive_adc_v, 2.0)
+        self.assertAlmostEqual(point.current_adc_v, 0.25)
+        self.assertEqual(point.drive_adc_range_v, 4.096)
+        self.assertEqual(point.current_adc_range_v, 0.512)
+
     def test_malformed_and_out_of_range_records_are_rejected(self) -> None:
         bad_records = (
             "",
             "DATA,1,2",
             "DATA,time,1,2,0.1,0.2",
             "DATA,1,40000,2,0.1,0.2",
-            "DATA,1,1,2,3.0,0.2",
+            "DATA,1,1,2,7000.0,0.2",
             "OTHER,1,1,2,0.1,0.2",
         )
         for record in bad_records:
@@ -73,6 +89,16 @@ class AcquisitionStateTests(unittest.TestCase):
             self.sent,
             [config.START_COMMAND, config.STOP_COMMAND, config.START_COMMAND],
         )
+
+    def test_range_status_applies_to_the_next_data_record(self) -> None:
+        self.controller.start()
+        self.controller.set_adc_ranges(4.096, 0.512)
+        point = self.controller.ingest(
+            "DATA,10,16000,16000,2.000000,0.250000"
+        )
+        assert point is not None
+        self.assertAlmostEqual(point.drive_adc_v, 2.0)
+        self.assertAlmostEqual(point.current_adc_v, 0.25)
 
     def test_clear_requires_confirmation_and_erases_only_after_yes(self) -> None:
         self.controller.start()
@@ -123,6 +149,8 @@ class DisplayDownsamplingTests(unittest.TestCase):
                 current_adc_v=0.0,
                 drive_adc_counts=0.0,
                 current_adc_counts=0.0,
+                drive_adc_range_v=config.DEFAULT_ADC_RANGE_VOLTS,
+                current_adc_range_v=config.DEFAULT_ADC_RANGE_VOLTS,
             )
             for index in range(7)
         )

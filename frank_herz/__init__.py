@@ -1,3 +1,3 @@
-"""Franck-Hertz data acquisition package."""
+"""Modern Lab dual-channel data acquisition package."""
 
-__version__ = "1.4.0"
+__version__ = "2.0.0"

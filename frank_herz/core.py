@@ -11,7 +11,7 @@ from . import config
 
 
 class ProtocolError(ValueError):
-    """Raised when a serial line is not a valid Franck-Hertz data record."""
+    """Raised when a serial line is not a valid dual-channel data record."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,8 +45,8 @@ class RawSample:
     elapsed_ms: int
     drive_adc_counts: float
     current_adc_counts: float
-    drive_adc_v: float
-    current_adc_v: float
+    drive_input_v: float
+    current_input_v: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,10 +58,12 @@ class DataPoint:
     current_adc_v: float
     drive_adc_counts: float
     current_adc_counts: float
+    drive_adc_range_v: float
+    current_adc_range_v: float
 
 
 def parse_data_line(line: bytes | str) -> RawSample:
-    """Parse `DATA,time_ms,drive_raw,current_raw,drive_v,current_v`."""
+    """Parse `DATA,time_ms,drive_raw,current_raw,drive_input_v,current_input_v`."""
 
     if isinstance(line, bytes):
         text = line.decode("ascii", errors="strict").strip()
@@ -81,31 +83,56 @@ def parse_data_line(line: bytes | str) -> RawSample:
     if elapsed_ms < 0 or not all(math.isfinite(value) for value in numeric):
         raise ProtocolError("DATA record contains an invalid numeric value.")
 
-    drive_counts, current_counts, drive_v, current_v = numeric
+    drive_counts, current_counts, drive_input_v, current_input_v = numeric
     if not (-32768.0 <= drive_counts <= 32767.0):
         raise ProtocolError("Drive ADC count is outside the ADS1115 range.")
     if not (-32768.0 <= current_counts <= 32767.0):
         raise ProtocolError("Current ADC count is outside the ADS1115 range.")
-    voltage_limit = config.ADS1115_FULL_SCALE_VOLTS * 1.01
-    if abs(drive_v) > voltage_limit or abs(current_v) > voltage_limit:
-        raise ProtocolError("ADC voltage is outside the configured full-scale range.")
+    input_limit = (
+        max(config.ADC_RANGE_VOLTS)
+        * config.MAX_DIVIDER_MULTIPLIER
+        * 1.01
+    )
+    if abs(drive_input_v) > input_limit or abs(current_input_v) > input_limit:
+        raise ProtocolError("Input voltage is outside the supported divider range.")
 
     return RawSample(
         elapsed_ms=elapsed_ms,
         drive_adc_counts=drive_counts,
         current_adc_counts=current_counts,
-        drive_adc_v=drive_v,
-        current_adc_v=current_v,
+        drive_input_v=drive_input_v,
+        current_input_v=current_input_v,
     )
 
 
-def convert_sample(raw: RawSample, calibration: Calibration) -> DataPoint:
-    """Convert the paired ADC measurement into laboratory units."""
+def validate_adc_range(range_v: float) -> float:
+    """Return a canonical ADS1115 range or reject an unsupported value."""
+
+    if not math.isfinite(range_v):
+        raise ValueError("ADC range must be finite.")
+    for supported in config.ADC_RANGE_VOLTS:
+        if math.isclose(range_v, supported, rel_tol=0.0, abs_tol=0.000_5):
+            return supported
+    raise ValueError(f"Unsupported ADS1115 range: {range_v!r} V")
+
+
+def convert_sample(
+    raw: RawSample,
+    calibration: Calibration,
+    drive_adc_range_v: float = config.DEFAULT_ADC_RANGE_VOLTS,
+    current_adc_range_v: float = config.DEFAULT_ADC_RANGE_VOLTS,
+) -> DataPoint:
+    """Convert a dual-channel ADC measurement into laboratory units."""
+
+    drive_adc_range_v = validate_adc_range(drive_adc_range_v)
+    current_adc_range_v = validate_adc_range(current_adc_range_v)
 
     drive_voltage_v = (
-        raw.drive_adc_v * calibration.drive_scale + calibration.drive_offset_v
+        raw.drive_input_v * calibration.drive_scale + calibration.drive_offset_v
     )
-    picoammeter_mv = (raw.current_adc_v - calibration.picoammeter_zero_v) * 1000.0
+    picoammeter_mv = (
+        raw.current_input_v - calibration.picoammeter_zero_v
+    ) * 1000.0
     tube_current_pa = (
         calibration.picoammeter_polarity
         * picoammeter_mv
@@ -115,10 +142,12 @@ def convert_sample(raw: RawSample, calibration: Calibration) -> DataPoint:
         elapsed_ms=raw.elapsed_ms,
         drive_voltage_v=drive_voltage_v,
         tube_current_pa=tube_current_pa,
-        drive_adc_v=raw.drive_adc_v,
-        current_adc_v=raw.current_adc_v,
+        drive_adc_v=raw.drive_adc_counts * drive_adc_range_v / 32768.0,
+        current_adc_v=raw.current_adc_counts * current_adc_range_v / 32768.0,
         drive_adc_counts=raw.drive_adc_counts,
         current_adc_counts=raw.current_adc_counts,
+        drive_adc_range_v=drive_adc_range_v,
+        current_adc_range_v=current_adc_range_v,
     )
 
 
@@ -169,6 +198,8 @@ class AcquisitionController:
         self.running = False
         self.malformed_lines = 0
         self.storage_full = False
+        self.drive_adc_range_v = config.DEFAULT_ADC_RANGE_VOLTS
+        self.current_adc_range_v = config.DEFAULT_ADC_RANGE_VOLTS
 
     def mark_device_ready(self) -> None:
         self.device_ready = True
@@ -176,6 +207,12 @@ class AcquisitionController:
     def disconnect(self) -> None:
         self.device_ready = False
         self.running = False
+
+    def set_adc_ranges(self, drive_range_v: float, current_range_v: float) -> None:
+        """Record the ranges that apply to the next incoming DATA row."""
+
+        self.drive_adc_range_v = validate_adc_range(drive_range_v)
+        self.current_adc_range_v = validate_adc_range(current_range_v)
 
     def start(self) -> None:
         if not self.device_ready:
@@ -195,7 +232,12 @@ class AcquisitionController:
             return None
         try:
             raw = parse_data_line(line)
-            point = convert_sample(raw, self.calibration)
+            point = convert_sample(
+                raw,
+                self.calibration,
+                self.drive_adc_range_v,
+                self.current_adc_range_v,
+            )
             self.dataset.append(point)
             return point
         except (ProtocolError, UnicodeError):

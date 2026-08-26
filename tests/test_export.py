@@ -22,7 +22,7 @@ class ExcelExportTests(unittest.TestCase):
         try:
             self.assertEqual(export_xlsx(path, (point,), calibration), 1)
             workbook = load_workbook(path, data_only=True)
-            sheet = workbook["Franck-Hertz Data"]
+            sheet = workbook["Acquisition Data"]
             self.assertEqual(tuple(cell.value for cell in sheet[1]), DATA_HEADERS)
             self.assertAlmostEqual(
                 sheet["A2"].value,
@@ -32,6 +32,8 @@ class ExcelExportTests(unittest.TestCase):
             self.assertEqual(sheet["C2"].value, 123)
             self.assertAlmostEqual(sheet["F2"].value, 1600.0)
             self.assertAlmostEqual(sheet["G2"].value, 3200.0)
+            self.assertAlmostEqual(sheet["H2"].value, 2.048)
+            self.assertAlmostEqual(sheet["I2"].value, 2.048)
             self.assertEqual(
                 workbook["Calibration"]["B4"].value,
                 calibration.picoammeter_mv_per_pa,

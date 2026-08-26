@@ -6,15 +6,13 @@ calibrate the setup without searching through the GUI or serial code.
 
 # Serial protocol. These values must match Frank_Herz_DAQ.ino.
 BAUD_RATE = 115_200
-# The banner identifies the physical Modern Lab shield and intentionally matches
-# SerialPlotter. A separate capability line identifies paired Franck-Hertz data.
-HANDSHAKE_BANNER = "Modern Lab Data Acquisition Shield"
-PROTOCOL_CAPABILITY = "#protocol,franck-hertz-paired,2"
+HANDSHAKE_BANNER = "Modern Lab Dual-Channel Data Acquisition"
+PROTOCOL_CAPABILITY = "#protocol,modern-lab-dual-channel,4"
 IDENTIFY_COMMAND = b"idn?\n"
-PAIRED_MODE_COMMAND = b"mode,paired\n"
-PAIRED_MODE_ACK = "#mode,paired"
 START_COMMAND = b"run\n"
 STOP_COMMAND = b"stop\n"
+AUTORANGE_QUERY_COMMAND = b"autorange?\n"
+RANGE_QUERY_COMMAND = b"range?\n"
 LINE_ENDING = b"\n"
 HANDSHAKE_TIMEOUT_SECONDS = 10.0
 IDENTIFY_RETRY_MS = 1_000
@@ -23,20 +21,19 @@ IDENTIFY_RETRY_MS = 1_000
 DEFAULT_AVERAGES = 10
 DEFAULT_SAMPLE_INTERVAL_MS = 50
 
-# ADS1115 setup used by the firmware: GAIN_TWO gives a +/-2.048 V full scale
-# and 62.5 uV/count. The shield's single-ended inputs must stay non-negative.
+# ADS1115 programmable full-scale ranges, ordered widest to narrowest. The
+# shield's single-ended inputs must remain between ground and the ADC supply.
 ADS1115_I2C_ADDRESS = 0x49
-ADS1115_FULL_SCALE_VOLTS = 2.048
-ADS1115_VOLTS_PER_COUNT = 0.000_062_5
+ADC_RANGE_VOLTS = (6.144, 4.096, 2.048, 1.024, 0.512, 0.256)
+DEFAULT_ADC_RANGE_VOLTS = 2.048
 DRIVE_ADC_CHANNEL = 0
 CURRENT_ADC_CHANNEL = 2
 
 # ---------------- Laboratory calibration (edit these) ----------------
-# Actual tube drive voltage = measured shield voltage * scale + offset.
-# The assumed 0--30 V drive monitor maps 30 V to 2.000 V at the ADS1115, so
-# its external divider/calibrated monitor scale is 15:1. Verify this ratio on
-# the completed hardware before connecting the tube drive monitor.
-DRIVE_VOLTAGE_SCALE = 15.0
+# Protocol v4 reports the external connector voltage after applying the
+# EEPROM-backed resistor divider in firmware. These values are optional
+# laboratory corrections applied after that firmware conversion.
+DRIVE_VOLTAGE_SCALE = 1.0
 DRIVE_VOLTAGE_OFFSET_V = 0.0
 
 # Picoammeter analog-output calibration. The requested working assumption is
@@ -52,9 +49,17 @@ UI_UPDATE_MS = 40
 SERIAL_READ_CHUNK = 2048
 SIMULATOR_PORT = "SIMULATOR (no hardware)"
 
-# Simulator model. The 2.000 V endpoint stays below the ADS1115's 2.048 V
-# full-scale limit and becomes 30 V after the configured 15:1 calibration.
-SIMULATOR_DRIVE_ADC_MAX_VOLTS = 2.0
+# Simulator model. Both virtual inputs start with the firmware's standard 10:1
+# dividers; autoranging widens Channel A in time to follow the full 30 V sweep.
+SIMULATOR_DRIVE_MAX_VOLTS = 30.0
 SIMULATOR_SWEEP_PERIOD_SECONDS = 12.0
 MERCURY_EXCITATION_VOLTS = 4.9
 SIMULATOR_FIRST_PEAK_VOLTS = 5.2
+MAX_DIVIDER_MULTIPLIER = 1_000.0
+
+# Firmware-equivalent autorange behavior used by the simulator.
+AUTORANGE_WIDEN_FRACTION = 0.90
+AUTORANGE_SATURATION_FRACTION = 0.98
+AUTORANGE_NARROW_FRACTION = 0.55
+AUTORANGE_NARROW_RECORDS = 20
+AUTORANGE_COOLDOWN_RECORDS = 8

@@ -1,4 +1,4 @@
-"""Excel export for complete Franck-Hertz datasets."""
+"""Excel export for complete dual-channel acquisition datasets."""
 
 from __future__ import annotations
 
@@ -20,6 +20,8 @@ DATA_HEADERS = (
     "Current ADC Voltage (V)",
     "Drive ADC Raw (counts)",
     "Current ADC Raw (counts)",
+    "Drive ADC Range (±V)",
+    "Current ADC Range (±V)",
 )
 
 
@@ -37,7 +39,7 @@ def export_xlsx(
 
     workbook = Workbook()
     sheet = workbook.active
-    sheet.title = "Franck-Hertz Data"
+    sheet.title = "Acquisition Data"
     sheet.append(DATA_HEADERS)
 
     for point in rows:
@@ -50,6 +52,8 @@ def export_xlsx(
                 point.current_adc_v,
                 point.drive_adc_counts,
                 point.current_adc_counts,
+                point.drive_adc_range_v,
+                point.current_adc_range_v,
             )
         )
 
@@ -58,8 +62,8 @@ def export_xlsx(
         cell.font = Font(color="FFFFFF", bold=True)
         cell.fill = header_fill
     sheet.freeze_panes = "A2"
-    sheet.auto_filter.ref = f"A1:G{max(1, len(rows) + 1)}"
-    widths = (20, 19, 19, 23, 25, 24, 26)
+    sheet.auto_filter.ref = f"A1:I{max(1, len(rows) + 1)}"
+    widths = (20, 19, 19, 23, 25, 24, 26, 22, 24)
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[get_column_letter(index)].width = width
 

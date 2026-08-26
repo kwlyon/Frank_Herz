@@ -46,11 +46,11 @@ class PlotNavigationToolbar(NavigationToolbar2Tk):
 
 
 class FranckHertzApp(tk.Tk):
-    """Scientific XY plotter for paired tube-drive and picoammeter readings."""
+    """Dual-channel strip-recorder and scientific X-Y acquisition interface."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.title("Franck-Hertz Data Acquisition")
+        self.title("Modern Lab Data Acquisition")
         self.geometry("1180x760")
         self.minsize(900, 600)
 
@@ -59,8 +59,6 @@ class FranckHertzApp(tk.Tk):
         self._handshake_timeout_id: str | None = None
         self._identity_probe_id: str | None = None
         self._hardware_banner_seen = False
-        self._paired_capability_seen = False
-        self._paired_mode_requested = False
         self._resume_after_protocol = False
         self._last_plotted_count = -1
         self._changing_plot_limits = False
@@ -72,6 +70,10 @@ class FranckHertzApp(tk.Tk):
         self._closing = False
         self._port_open = False
         self.autoscale_var = tk.BooleanVar(value=True)
+        self.autorange_var = tk.BooleanVar(value=True)
+        default_range_label = self._format_adc_range(config.DEFAULT_ADC_RANGE_VOLTS)
+        self.range_a_var = tk.StringVar(value=default_range_label)
+        self.range_b_var = tk.StringVar(value=default_range_label)
         self.cursor_visible_var = tk.BooleanVar(value=True)
         self.plot_mode_var = tk.StringVar(value=STRIP_RECORDER_MODE)
         self.controller = AcquisitionController(
@@ -150,6 +152,48 @@ class FranckHertzApp(tk.Tk):
             row=1, column=2, sticky="w", padx=(5, 6), pady=(8, 0)
         )
         self.plot_mode_combo.bind("<<ComboboxSelected>>", self._change_plot_mode)
+
+        self.autorange_checkbutton = ttk.Checkbutton(
+            controls,
+            text="ADC Autorange",
+            variable=self.autorange_var,
+            command=self._toggle_autorange,
+            state=tk.DISABLED,
+        )
+        self.autorange_checkbutton.grid(
+            row=1, column=4, sticky="w", padx=(0, 14), pady=(8, 0)
+        )
+        range_labels = tuple(
+            self._format_adc_range(value) for value in config.ADC_RANGE_VOLTS
+        )
+        ttk.Label(controls, text="Channel A range:").grid(
+            row=1, column=5, sticky="e", pady=(8, 0)
+        )
+        self.range_a_combo = ttk.Combobox(
+            controls,
+            width=10,
+            state=tk.DISABLED,
+            textvariable=self.range_a_var,
+            values=range_labels,
+        )
+        self.range_a_combo.grid(
+            row=1, column=6, sticky="w", padx=(5, 12), pady=(8, 0)
+        )
+        ttk.Label(controls, text="Channel B range:").grid(
+            row=1, column=7, sticky="e", pady=(8, 0)
+        )
+        self.range_b_combo = ttk.Combobox(
+            controls,
+            width=10,
+            state=tk.DISABLED,
+            textvariable=self.range_b_var,
+            values=range_labels,
+        )
+        self.range_b_combo.grid(
+            row=1, column=8, sticky="w", pady=(8, 0)
+        )
+        self.range_a_combo.bind("<<ComboboxSelected>>", self._manual_range_changed)
+        self.range_b_combo.bind("<<ComboboxSelected>>", self._manual_range_changed)
 
         status_frame = ttk.Frame(self, padding=(12, 2, 12, 4))
         status_frame.pack(fill=tk.X)
@@ -476,13 +520,12 @@ class FranckHertzApp(tk.Tk):
         self._port_open = True
         self.controller.disconnect()
         self._hardware_banner_seen = False
-        self._paired_capability_seen = False
-        self._paired_mode_requested = False
         self._resume_after_protocol = False
         self.connect_button.configure(text="Disconnect")
         self.port_combo.configure(state=tk.DISABLED)
         self.start_button.configure(state=tk.DISABLED)
         self.stop_button.configure(state=tk.DISABLED)
+        self._update_adc_control_states()
         self._set_led("waiting")
         self._set_status(
             f"Port open at {config.BAUD_RATE:,} baud; waiting for device handshake…",
@@ -500,19 +543,15 @@ class FranckHertzApp(tk.Tk):
         if self._port_open and not self.controller.device_ready:
             self._set_led("error")
             if self._hardware_banner_seen:
-                detail = (
-                    "paired mode did not start"
-                    if self._paired_capability_seen
-                    else "paired-channel firmware was not found"
-                )
                 self._set_status(
-                    f"Modern Lab shield detected, but {detail}. "
+                    "Modern Lab hardware detected, but the current dual-channel "
+                    "protocol was not found. "
                     "Upload the current Frank_Herz_DAQ.ino to this Arduino.",
                     "error",
                 )
             else:
                 self._set_status(
-                    "Port is open, but no Modern Lab Data Acquisition Shield responded.",
+                    "Port is open, but no Modern Lab acquisition hardware responded.",
                     "error",
                 )
 
@@ -531,13 +570,12 @@ class FranckHertzApp(tk.Tk):
         self._port_open = False
         self.controller.disconnect()
         self._hardware_banner_seen = False
-        self._paired_capability_seen = False
-        self._paired_mode_requested = False
         self._resume_after_protocol = False
         self.connect_button.configure(text="Connect")
         self.port_combo.configure(state="readonly")
         self.start_button.configure(state=tk.DISABLED)
         self.stop_button.configure(state=tk.DISABLED)
+        self._update_adc_control_states()
         self._set_led("error" if error else "off")
         self._set_status(status, "error" if error else "neutral")
 
@@ -551,6 +589,8 @@ class FranckHertzApp(tk.Tk):
         self._write(
             f"delay,{config.DEFAULT_SAMPLE_INTERVAL_MS}\n".encode("ascii")
         )
+        self._write(config.AUTORANGE_QUERY_COMMAND)
+        self._write(config.RANGE_QUERY_COMMAND)
 
     def _schedule_identity_probe(self, delay_ms: int = config.IDENTIFY_RETRY_MS) -> None:
         self._cancel_identity_probe()
@@ -575,7 +615,7 @@ class FranckHertzApp(tk.Tk):
             return
         self.start_button.configure(state=tk.DISABLED)
         self.stop_button.configure(state=tk.NORMAL)
-        self._set_status("Acquiring paired drive-voltage and tube-current data…", "good")
+        self._set_status("Acquiring dual-channel data…", "good")
 
     def _stop_acquisition(self) -> None:
         try:
@@ -633,9 +673,9 @@ class FranckHertzApp(tk.Tk):
         if not points:
             messagebox.showinfo("No data", "There is no collected data to export.")
             return None
-        filename = f"franck_hertz_{datetime.now():%Y%m%d-%H%M%S}.xlsx"
+        filename = f"modern_lab_data_{datetime.now():%Y%m%d-%H%M%S}.xlsx"
         selected = filedialog.asksaveasfilename(
-            title="Export Franck-Hertz data",
+            title="Export acquisition data",
             defaultextension=".xlsx",
             filetypes=(("Excel workbook", "*.xlsx"),),
             initialfile=filename,
@@ -680,11 +720,13 @@ class FranckHertzApp(tk.Tk):
                 self._handle_hardware_banner()
             elif text == config.PROTOCOL_CAPABILITY:
                 self._handle_protocol_capability()
-            elif text == config.PAIRED_MODE_ACK:
-                self._handle_paired_mode_ack()
+            elif text.startswith("#autorange,"):
+                self._handle_autorange_status(text)
+            elif text.startswith("#range,"):
+                self._handle_range_status(text)
             elif text.startswith("ERR,"):
                 self._set_status(f"Arduino reported: {text}", "error")
-            elif text.startswith("#") or not text:
+            elif text.startswith("#") or text.startswith("OK,") or not text:
                 continue
             else:
                 before = len(self.controller.dataset)
@@ -703,7 +745,7 @@ class FranckHertzApp(tk.Tk):
         self.after(config.UI_UPDATE_MS, self._process_events)
 
     def _handle_hardware_banner(self) -> None:
-        """Record the shared shield identity; paired capability is still required."""
+        """Record the hardware identity; protocol capability is still required."""
 
         if self.controller.device_ready:
             self._resume_after_protocol = self.controller.running
@@ -711,39 +753,20 @@ class FranckHertzApp(tk.Tk):
             self.start_button.configure(state=tk.DISABLED)
             self.stop_button.configure(state=tk.DISABLED)
         self._hardware_banner_seen = True
-        self._paired_capability_seen = False
-        self._paired_mode_requested = False
         self._set_led("waiting")
         self._set_status(
-            "Modern Lab shield detected; verifying paired-channel firmware…",
+            "Modern Lab hardware detected; verifying dual-channel firmware…",
             "waiting",
         )
 
     def _handle_protocol_capability(self) -> None:
-        """Enable acquisition only after the paired record format is confirmed."""
+        """Enable acquisition after the current dual-channel protocol is confirmed."""
 
         self._hardware_banner_seen = True
-        self._paired_capability_seen = True
-        if self.controller.device_ready or self._paired_mode_requested:
-            return
-        self._paired_mode_requested = True
-        self._set_status(
-            "Compatible firmware detected; selecting paired-channel mode…",
-            "waiting",
-        )
-        try:
-            self._write(config.PAIRED_MODE_COMMAND)
-        except ConnectionError as exc:
-            self._event_queue.put(("error", f"Mode selection failed: {exc}"))
-
-    def _handle_paired_mode_ack(self) -> None:
-        """Finish setup only after the firmware confirms paired mode."""
-
-        if not self._paired_capability_seen:
+        if self.controller.device_ready:
             return
         resume_after_reset = self._resume_after_protocol
         self._resume_after_protocol = False
-        self._paired_mode_requested = False
         self.controller.mark_device_ready()
         self._cancel_handshake_timeout()
         self._cancel_identity_probe()
@@ -761,6 +784,7 @@ class FranckHertzApp(tk.Tk):
         self.stop_button.configure(
             state=tk.NORMAL if self.controller.running else tk.DISABLED
         )
+        self._update_adc_control_states()
         if resume_after_reset:
             self._set_status(
                 "Arduino reset detected; acquisition settings restored and streaming resumed.",
@@ -768,6 +792,71 @@ class FranckHertzApp(tk.Tk):
             )
         else:
             self._set_status("Arduino connected and ready.", "good")
+
+    @staticmethod
+    def _format_adc_range(range_v: float) -> str:
+        return f"±{range_v:.3f} V"
+
+    @staticmethod
+    def _parse_adc_range_label(label: str) -> float:
+        return float(label.replace("±", "").replace("V", "").strip())
+
+    def _update_adc_control_states(self) -> None:
+        ready = self._port_open and self.controller.device_ready
+        self.autorange_checkbutton.configure(
+            state=tk.NORMAL if ready else tk.DISABLED
+        )
+        range_state = (
+            "readonly" if ready and not self.autorange_var.get() else tk.DISABLED
+        )
+        self.range_a_combo.configure(state=range_state)
+        self.range_b_combo.configure(state=range_state)
+
+    def _toggle_autorange(self) -> None:
+        if not self.controller.device_ready:
+            self._update_adc_control_states()
+            return
+        self._update_adc_control_states()
+        enabled = 1 if self.autorange_var.get() else 0
+        try:
+            self._write(f"autorange,{enabled}\n".encode("ascii"))
+        except ConnectionError as exc:
+            self._event_queue.put(("error", f"Could not change ADC autorange: {exc}"))
+
+    def _manual_range_changed(self, event) -> None:
+        if self.autorange_var.get() or not self.controller.device_ready:
+            self._update_adc_control_states()
+            return
+        channel = "A" if event.widget is self.range_a_combo else "B"
+        variable = self.range_a_var if channel == "A" else self.range_b_var
+        try:
+            range_v = self._parse_adc_range_label(variable.get())
+            self._write(f"range,{channel},{range_v:.3f}\n".encode("ascii"))
+        except (ConnectionError, ValueError) as exc:
+            self._event_queue.put(("error", f"Could not change ADC range: {exc}"))
+
+    def _handle_autorange_status(self, text: str) -> None:
+        fields = text.split(",")
+        if len(fields) != 2 or fields[1] not in {"0", "1"}:
+            self._set_status(f"Invalid autorange status from Arduino: {text}", "error")
+            return
+        self.autorange_var.set(fields[1] == "1")
+        self._update_adc_control_states()
+
+    def _handle_range_status(self, text: str) -> None:
+        try:
+            fields = dict(field.split("=", 1) for field in text.split(",")[1:])
+            range_a = float(fields["A"])
+            range_b = float(fields["B"])
+            self.controller.set_adc_ranges(range_a, range_b)
+        except (KeyError, ValueError):
+            self._set_status(f"Invalid ADC range status from Arduino: {text}", "error")
+            return
+        self.range_a_var.set(self._format_adc_range(self.controller.drive_adc_range_v))
+        self.range_b_var.set(
+            self._format_adc_range(self.controller.current_adc_range_v)
+        )
+        self._update_adc_control_states()
 
     def _redraw_plot(self, force: bool = False) -> None:
         points = self.controller.dataset.snapshot()
@@ -1014,6 +1103,10 @@ def run_gui_smoke_test() -> None:
             failures.append("Home, Pan, or Zoom was missing from the plot toolbar")
         if not app.autoscale_checkbutton.winfo_ismapped():
             failures.append("live-autoscale control was not visible")
+        if not app.autorange_checkbutton.winfo_ismapped():
+            failures.append("ADC-autorange control was not visible")
+        if not app.range_a_combo.winfo_ismapped() or not app.range_b_combo.winfo_ismapped():
+            failures.append("independent ADC-range controls were not visible")
         if app.plot_mode_var.get() != STRIP_RECORDER_MODE:
             failures.append("strip recorder was not the default plot mode")
         if tuple(app.plot_mode_combo.cget("values")) != PLOT_MODES:
@@ -1047,6 +1140,28 @@ def run_gui_smoke_test() -> None:
         if not app.controller.device_ready:
             failures.append("simulator handshake was not processed")
         else:
+            if not app.autorange_var.get():
+                failures.append("ADC autoranging was not enabled by default")
+            if str(app.range_a_combo.cget("state")) != "disabled" or str(
+                app.range_b_combo.cget("state")
+            ) != "disabled":
+                failures.append("manual ADC ranges were editable during autoranging")
+
+            app.autorange_var.set(False)
+            app._toggle_autorange()
+            if str(app.range_a_combo.cget("state")) != "readonly":
+                failures.append("manual ADC range did not enable with autorange off")
+            app.range_a_var.set(app._format_adc_range(1.024))
+            app._manual_range_changed(SimpleNamespace(widget=app.range_a_combo))
+            transport = app._transport
+            if not isinstance(transport, SimulatorTransport) or not abs(
+                transport.active_ranges[0] - 1.024
+            ) < 1e-9:
+                failures.append("manual Channel A ADC range command was not applied")
+            app.autorange_var.set(True)
+            app._toggle_autorange()
+            if str(app.range_a_combo.cget("state")) != "disabled":
+                failures.append("manual ADC range remained editable during autoranging")
             app._start_acquisition()
 
     def switch_plot_modes_while_running() -> None:
@@ -1234,7 +1349,7 @@ def run_gui_smoke_test() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Franck-Hertz data acquisition")
+    parser = argparse.ArgumentParser(description="Modern Lab data acquisition")
     parser.add_argument(
         "--smoke-test",
         action="store_true",
