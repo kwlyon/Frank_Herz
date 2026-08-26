@@ -1,4 +1,4 @@
-"""Excel export for complete dual-channel acquisition datasets."""
+"""Excel export for complete Franck-Hertz acquisition datasets."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ def export_xlsx(
 
     workbook = Workbook()
     sheet = workbook.active
-    sheet.title = "Acquisition Data"
+    sheet.title = "Franck-Hertz Data"
     sheet.append(DATA_HEADERS)
 
     for point in rows:

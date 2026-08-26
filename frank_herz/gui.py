@@ -50,7 +50,7 @@ class FranckHertzApp(tk.Tk):
 
     def __init__(self) -> None:
         super().__init__()
-        self.title("Modern Lab Data Acquisition")
+        self.title("Franck-Hertz Data Acquisition")
         self.geometry("1180x760")
         self.minsize(900, 600)
 
@@ -673,9 +673,9 @@ class FranckHertzApp(tk.Tk):
         if not points:
             messagebox.showinfo("No data", "There is no collected data to export.")
             return None
-        filename = f"modern_lab_data_{datetime.now():%Y%m%d-%H%M%S}.xlsx"
+        filename = f"franck_hertz_{datetime.now():%Y%m%d-%H%M%S}.xlsx"
         selected = filedialog.asksaveasfilename(
-            title="Export acquisition data",
+            title="Export Franck-Hertz data",
             defaultextension=".xlsx",
             filetypes=(("Excel workbook", "*.xlsx"),),
             initialfile=filename,
@@ -1349,7 +1349,7 @@ def run_gui_smoke_test() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Modern Lab data acquisition")
+    parser = argparse.ArgumentParser(description="Franck-Hertz data acquisition")
     parser.add_argument(
         "--smoke-test",
         action="store_true",

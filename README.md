@@ -1,13 +1,14 @@
-# Modern Lab Data Acquisition
+# Franck–Hertz Data Acquisition
 
-This project provides the shared two-channel acquisition application and Arduino
-firmware for the Atomic Spectroscopy, Molecular Spectroscopy, and Franck–Hertz
-advanced-laboratory experiments. The Windows title is **Modern Lab Data
-Acquisition**. Its Franck–Hertz X–Y characteristic, two-channel strip recorder,
-Excel export, live plot autoscaling, measurement cursor, and simulator remain
-available.
+This project provides the experiment-specific Franck–Hertz acquisition
+application and the dual-channel Arduino firmware used with it. The Windows
+title is **Franck–Hertz Data Acquisition**. Its Franck–Hertz X–Y characteristic,
+two-channel strip recorder, Excel export, live plot autoscaling, measurement
+cursor, and simulator are all retained.
 
-Version 2.0 supports the current dual-channel hardware only. The retired analog
+Version 2.0 supports the current dual-channel hardware only. The same firmware
+may also be copied into other acquisition projects, but this desktop application
+remains specifically configured for the Franck–Hertz experiment. The retired analog
 gain-switching hardware and its compatibility protocol are not part of this
 firmware or desktop application.
 

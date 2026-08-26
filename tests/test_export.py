@@ -22,7 +22,7 @@ class ExcelExportTests(unittest.TestCase):
         try:
             self.assertEqual(export_xlsx(path, (point,), calibration), 1)
             workbook = load_workbook(path, data_only=True)
-            sheet = workbook["Acquisition Data"]
+            sheet = workbook["Franck-Hertz Data"]
             self.assertEqual(tuple(cell.value for cell in sheet[1]), DATA_HEADERS)
             self.assertAlmostEqual(
                 sheet["A2"].value,

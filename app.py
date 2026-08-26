@@ -1,4 +1,4 @@
-"""Windows/source entry point for the Modern Lab acquisition app."""
+"""Windows/source entry point for the Franck-Hertz acquisition app."""
 
 from frank_herz.gui import main
 
