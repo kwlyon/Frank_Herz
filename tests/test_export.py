@@ -24,7 +24,10 @@ class ExcelExportTests(unittest.TestCase):
             workbook = load_workbook(path, data_only=True)
             sheet = workbook["Franck-Hertz Data"]
             self.assertEqual(tuple(cell.value for cell in sheet[1]), DATA_HEADERS)
-            self.assertAlmostEqual(sheet["A2"].value, 0.1)
+            self.assertAlmostEqual(
+                sheet["A2"].value,
+                0.1 * calibration.drive_scale + calibration.drive_offset_v,
+            )
             self.assertAlmostEqual(sheet["B2"].value, 200.0)
             self.assertEqual(sheet["C2"].value, 123)
             self.assertAlmostEqual(sheet["F2"].value, 1600.0)

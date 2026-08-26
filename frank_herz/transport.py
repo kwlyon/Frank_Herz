@@ -218,21 +218,24 @@ class SimulatorTransport:
             self._stop.wait(self._interval_ms / 1000.0)
 
     def _make_sample(self, elapsed_s: float) -> bytes:
-        # A triangular sweep stays within the ADS1115 input range. With a
-        # configured divider scale, the displayed voltage expands accordingly.
-        span_v = config.ADS1115_FULL_SCALE_VOLTS * 0.85
-        phase = (elapsed_s % 12.0) / 12.0
+        # Sweep the simulated 0--30 V monitor through the same ADC range and
+        # production protocol used by the hardware.
+        span_v = config.SIMULATOR_DRIVE_ADC_MAX_VOLTS
+        phase = (
+            elapsed_s % config.SIMULATOR_SWEEP_PERIOD_SECONDS
+        ) / config.SIMULATOR_SWEEP_PERIOD_SECONDS
         triangle = phase * 2.0 if phase <= 0.5 else (1.0 - phase) * 2.0
         drive_adc_v = max(0.0, span_v * triangle)
         drive_actual_v = (
             drive_adc_v * config.DRIVE_VOLTAGE_SCALE
             + config.DRIVE_VOLTAGE_OFFSET_V
         )
-        displayed_span = max(0.2, span_v * abs(config.DRIVE_VOLTAGE_SCALE))
-        spacing = min(4.9, displayed_span / 7.0)
-        oscillation = 0.5 + 0.5 * math.cos(2.0 * math.pi * drive_actual_v / spacing)
-        current_pa = 40.0 + 165.0 * drive_adc_v / span_v + 85.0 * oscillation
-        noise = self._rng.gauss(0.0, 2.0 / math.sqrt(self._averages))
+        current_pa = self._ideal_current_pa(drive_actual_v)
+
+        # This is the noise remaining after the requested ADC averages. At the
+        # default of ten averages it is about 1.9 pA RMS: visible on the trace,
+        # but small compared with the Franck-Hertz peak structure.
+        noise = self._rng.gauss(0.0, 6.0 / math.sqrt(self._averages))
         current_pa += noise
         current_adc_v = (
             current_pa
@@ -257,3 +260,34 @@ class SimulatorTransport:
             f"DATA,{elapsed_ms},{drive_raw:.3f},{current_raw:.3f},"
             f"{drive_adc_v:.6f},{current_adc_v:.6f}"
         ).encode("ascii")
+
+    @staticmethod
+    def _baseline_current_pa(drive_actual_v: float) -> float:
+        """Monotonic tube current expected without inelastic-loss peaks."""
+
+        voltage = max(0.0, drive_actual_v)
+        # A V^(3/2) dependence is the Child-Langmuir space-charge trend. The
+        # coefficients put the simulated picoammeter signal in a useful range.
+        return 18.0 + 0.95 * voltage**1.5
+
+    @classmethod
+    def _ideal_current_pa(cls, drive_actual_v: float) -> float:
+        """Return a smooth mercury Franck-Hertz characteristic before noise."""
+
+        voltage = max(0.0, drive_actual_v)
+        current_pa = cls._baseline_current_pa(voltage)
+        peak_voltage = config.SIMULATOR_FIRST_PEAK_VOLTS
+
+        # Broad peaks reproduce the oscilloscope-like envelope more closely
+        # than a pure cosine. Their 4.9 V spacing represents mercury's first
+        # excitation energy; their growth follows the increasing electron flux.
+        while peak_voltage <= 30.0:
+            width_v = 0.90 if voltage < peak_voltage else 1.20
+            separation_v = (voltage - peak_voltage) / width_v
+            peak_amplitude_pa = 38.0 + 1.65 * peak_voltage
+            current_pa += peak_amplitude_pa * math.exp(
+                -0.5 * separation_v * separation_v
+            )
+            peak_voltage += config.MERCURY_EXCITATION_VOLTS
+
+        return current_pa

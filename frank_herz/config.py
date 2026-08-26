@@ -33,10 +33,10 @@ CURRENT_ADC_CHANNEL = 2
 
 # ---------------- Laboratory calibration (edit these) ----------------
 # Actual tube drive voltage = measured shield voltage * scale + offset.
-# The SerialPlotter project contains no documented high-voltage divider ratio,
-# so the safe default is unity. Set this to the verified external divider ratio
-# before measuring a drive voltage above the ADC input range.
-DRIVE_VOLTAGE_SCALE = 1.0
+# The assumed 0--30 V drive monitor maps 30 V to 2.000 V at the ADS1115, so
+# its external divider/calibrated monitor scale is 15:1. Verify this ratio on
+# the completed hardware before connecting the tube drive monitor.
+DRIVE_VOLTAGE_SCALE = 15.0
 DRIVE_VOLTAGE_OFFSET_V = 0.0
 
 # Picoammeter analog-output calibration. The requested working assumption is
@@ -51,3 +51,10 @@ MAX_DISPLAY_POINTS = 20_000
 UI_UPDATE_MS = 40
 SERIAL_READ_CHUNK = 2048
 SIMULATOR_PORT = "SIMULATOR (no hardware)"
+
+# Simulator model. The 2.000 V endpoint stays below the ADS1115's 2.048 V
+# full-scale limit and becomes 30 V after the configured 15:1 calibration.
+SIMULATOR_DRIVE_ADC_MAX_VOLTS = 2.0
+SIMULATOR_SWEEP_PERIOD_SECONDS = 12.0
+MERCURY_EXCITATION_VOLTS = 4.9
+SIMULATOR_FIRST_PEAK_VOLTS = 5.2

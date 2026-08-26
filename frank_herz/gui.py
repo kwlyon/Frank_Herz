@@ -247,36 +247,43 @@ class FranckHertzApp(tk.Tk):
         self.secondary_axes.margins(y=0.08)
         plot_frame = ttk.Frame(self, padding=(10, 2, 10, 8))
         plot_frame.pack(fill=tk.BOTH, expand=True)
+        plot_frame.columnconfigure(0, weight=1)
+        plot_frame.rowconfigure(0, weight=1)
         self.canvas = FigureCanvasTkAgg(self.figure, master=plot_frame)
         self.canvas.draw()
-        self.canvas.get_tk_widget().pack(
-            side=tk.TOP, fill=tk.BOTH, expand=True
+        self.canvas.get_tk_widget().grid(
+            row=0, column=0, sticky="nsew"
         )
 
-        navigation_frame = ttk.Frame(plot_frame)
-        navigation_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(3, 0))
+        # Give navigation its own non-expanding grid row. Packing the expanding
+        # canvas before this row allowed it to consume all available space on
+        # shorter displays, hiding both the Matplotlib tools and checkboxes.
+        self.navigation_frame = ttk.Frame(plot_frame)
+        self.navigation_frame.grid(row=1, column=0, sticky="ew", pady=(3, 0))
         self.toolbar = PlotNavigationToolbar(
             self.canvas,
-            navigation_frame,
+            self.navigation_frame,
             pack_toolbar=False,
             home_callback=self._home_plot,
         )
         self.toolbar.update()
-        self.toolbar.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.autoscale_checkbutton = ttk.Checkbutton(
-            navigation_frame,
+            self.navigation_frame,
             text="Auto-scale live",
             variable=self.autoscale_var,
             command=self._toggle_autoscale,
         )
         self.autoscale_checkbutton.pack(side=tk.RIGHT, padx=(10, 4))
         self.cursor_checkbutton = ttk.Checkbutton(
-            navigation_frame,
+            self.navigation_frame,
             text="Measurement cursor",
             variable=self.cursor_visible_var,
             command=self._toggle_measurement_cursor,
         )
         self.cursor_checkbutton.pack(side=tk.RIGHT, padx=(10, 2))
+        # Pack the fixed-width controls first so an expanding toolbar cannot
+        # crowd them out on a narrow window.
+        self.toolbar.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         self.canvas.mpl_connect("button_press_event", self._cursor_mouse_press)
         self.canvas.mpl_connect("motion_notify_event", self._cursor_mouse_move)
@@ -995,6 +1002,18 @@ def run_gui_smoke_test() -> None:
         return min(values) >= low - tolerance and max(values) <= high + tolerance
 
     def connect() -> None:
+        app.update_idletasks()
+        if app.navigation_frame.winfo_height() <= 1 or not (
+            app.navigation_frame.winfo_ismapped()
+        ):
+            failures.append("plot navigation row was not visibly laid out")
+        if app.toolbar.winfo_height() <= 1 or not app.toolbar.winfo_ismapped():
+            failures.append("Matplotlib navigation toolbar was not visible")
+        toolbar_tools = {item[0] for item in app.toolbar.toolitems if item[0]}
+        if not {"Home", "Pan", "Zoom"}.issubset(toolbar_tools):
+            failures.append("Home, Pan, or Zoom was missing from the plot toolbar")
+        if not app.autoscale_checkbutton.winfo_ismapped():
+            failures.append("live-autoscale control was not visible")
         if app.plot_mode_var.get() != STRIP_RECORDER_MODE:
             failures.append("strip recorder was not the default plot mode")
         if tuple(app.plot_mode_combo.cget("values")) != PLOT_MODES:
@@ -1012,9 +1031,13 @@ def run_gui_smoke_test() -> None:
 
         app.plot_mode_var.set(XY_PLOT_MODE)
         app._change_plot_mode()
+        app.update_idletasks()
         if app.axes.get_xlabel() != "Drive Voltage (V)":
             failures.append("X–Y mode could not be selected before acquisition")
-        if app.cursor_checkbutton.winfo_manager() != "pack":
+        if (
+            app.cursor_checkbutton.winfo_manager() != "pack"
+            or not app.cursor_checkbutton.winfo_ismapped()
+        ):
             failures.append("measurement-cursor control was missing from X–Y mode")
         app.plot_mode_var.set(STRIP_RECORDER_MODE)
         app._change_plot_mode()

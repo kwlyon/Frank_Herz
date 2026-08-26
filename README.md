@@ -32,14 +32,21 @@ The ADS1115 uses `GAIN_TWO`, a ±2.048 V converter range with 62.5 µV/count. In
 All laboratory calibration settings are grouped near the top of [`frank_herz/config.py`](frank_herz/config.py):
 
 ```python
-DRIVE_VOLTAGE_SCALE = 1.0
+DRIVE_VOLTAGE_SCALE = 15.0
 DRIVE_VOLTAGE_OFFSET_V = 0.0
 PICOAMMETER_MV_PER_PA = 1.0
 PICOAMMETER_ZERO_V = 0.0
 PICOAMMETER_POLARITY = 1.0
 ```
 
-The `SerialPlotter` source and shield files do not contain a documented high-voltage divider ratio for the tube-drive monitor. Unity is therefore the safe default: the x-axis initially reports the voltage measured at the shield input. If a verified 40:1 monitor divider is used, for example, set `DRIVE_VOLTAGE_SCALE = 40.0` and rebuild the executable.
+The configured 15:1 scale assumes that the completed drive monitor maps the
+experiment's 0--30 V accelerating-voltage range to 0--2.000 V at the ADS1115.
+Verify that ratio with a meter and update `DRIVE_VOLTAGE_SCALE` if the actual
+monitor differs. The ADS1115 input must never exceed its safe range.
+
+The simulator sweeps this same 0--30 V range. Its current model superimposes
+broad mercury peaks separated by 4.9 V on a rising, space-charge-like
+background and adds a small amount of averaging-dependent random noise.
 
 The working picoammeter assumption requested for this project is `1 mV = 1 pA`. The application calculates:
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import queue
 import time
 import unittest
@@ -10,6 +11,57 @@ from frank_herz.transport import SimulatorTransport
 
 
 class SimulatorTests(unittest.TestCase):
+    def test_mercury_model_sweeps_thirty_volts_with_4_9_volt_peak_spacing(self) -> None:
+        simulator = SimulatorTransport(lambda line: None, lambda error: None)
+        simulator._mode = "paired"
+
+        # Halfway through the triangular period is the 30 V endpoint.
+        raw = simulator._make_sample(config.SIMULATOR_SWEEP_PERIOD_SECONDS / 2.0)
+        fields = raw.decode("ascii").split(",")
+        drive_adc_v = float(fields[4])
+        displayed_drive_v = (
+            drive_adc_v * config.DRIVE_VOLTAGE_SCALE
+            + config.DRIVE_VOLTAGE_OFFSET_V
+        )
+        self.assertAlmostEqual(displayed_drive_v, 30.0, places=6)
+
+        # Locate the maxima of the noise-free curve at fine voltage spacing.
+        voltages = [index / 100.0 for index in range(3_000)]
+        currents = [simulator._ideal_current_pa(voltage) for voltage in voltages]
+        maxima = [
+            voltages[index]
+            for index in range(1, len(voltages) - 1)
+            if currents[index - 1] < currents[index] > currents[index + 1]
+        ]
+        self.assertGreaterEqual(len(maxima), 5)
+        for left, right in zip(maxima, maxima[1:]):
+            self.assertAlmostEqual(right - left, 4.9, delta=0.15)
+
+    def test_mercury_model_has_rising_baseline_and_small_random_noise(self) -> None:
+        simulator = SimulatorTransport(lambda line: None, lambda error: None)
+        simulator._mode = "paired"
+        self.assertGreater(
+            simulator._baseline_current_pa(30.0),
+            simulator._baseline_current_pa(10.0),
+        )
+
+        simulator._averages = config.DEFAULT_AVERAGES
+        ideal = simulator._ideal_current_pa(15.0)
+        noisy_currents: list[float] = []
+        for _ in range(200):
+            # A quarter period is 15 V on the upward sweep.
+            raw = simulator._make_sample(
+                config.SIMULATOR_SWEEP_PERIOD_SECONDS / 4.0
+            )
+            current_adc_v = float(raw.decode("ascii").split(",")[5])
+            noisy_currents.append(current_adc_v * 1000.0)
+        rms_noise = math.sqrt(
+            sum((current - ideal) ** 2 for current in noisy_currents)
+            / len(noisy_currents)
+        )
+        self.assertGreater(rms_noise, 1.0)
+        self.assertLess(rms_noise, 3.0)
+
     def test_production_protocol_pause_resume_and_disconnect(self) -> None:
         lines: queue.Queue[bytes] = queue.Queue()
         errors: queue.Queue[str] = queue.Queue()
