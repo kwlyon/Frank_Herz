@@ -33,22 +33,21 @@ class FirmwareArchitectureTests(unittest.TestCase):
             '"mode,legacy"',
             "scaleFactor",
             "SCALE_ADDR",
+            "readADC_SingleEnded",
         )
         for marker in obsolete_markers:
             with self.subTest(marker=marker):
                 self.assertNotIn(marker, self.source)
 
-    def test_two_bnc_channels_are_sampled_with_independent_pga_ranges(self) -> None:
+    def test_two_differential_pairs_are_sampled_with_independent_pga_ranges(self) -> None:
         required_markers = (
             "const uint8_t ADS1115_I2C_ADDRESS = 0x49;",
             "ads.begin(ADS1115_I2C_ADDRESS)",
-            "const uint8_t CHANNEL_A_INPUT = 0;",
-            "const uint8_t CHANNEL_B_INPUT = 2;",
             "uint8_t activeRange[2]",
             "ads.setGain(gainForRange(sampledRangeA));",
-            "ads.readADC_SingleEnded(CHANNEL_A_INPUT)",
+            "ads.readADC_Differential_0_1()",
             "ads.setGain(gainForRange(sampledRangeB));",
-            "ads.readADC_SingleEnded(CHANNEL_B_INPUT)",
+            "ads.readADC_Differential_2_3()",
         )
         for marker in required_markers:
             with self.subTest(marker=marker):

@@ -3,14 +3,13 @@
 #include <Wire.h>
 
 // Modern Lab dual-channel data-acquisition firmware.
-// Channel A is ADS1115 AIN0 (J1); channel B is ADS1115 AIN2 (J3).
+// Channel A is the differential ADS1115 AIN0-AIN1 pair (J1).
+// Channel B is the differential ADS1115 AIN2-AIN3 pair (J3).
 
 Adafruit_ADS1115 ads;
 
 const unsigned long SERIAL_BAUD = 115200;
 const uint8_t ADS1115_I2C_ADDRESS = 0x49;
-const uint8_t CHANNEL_A_INPUT = 0;
-const uint8_t CHANNEL_B_INPUT = 2;
 
 const uint16_t DEFAULT_ACQUISITION_DELAY_MS = 100;
 const uint8_t DEFAULT_AVERAGE_COUNT = 1;
@@ -330,9 +329,9 @@ void acquireAndEmitRecord() {
 
   for (uint8_t sampleIndex = 0; sampleIndex < averageCount; ++sampleIndex) {
     ads.setGain(gainForRange(sampledRangeA));
-    const int16_t rawA = ads.readADC_SingleEnded(CHANNEL_A_INPUT);
+    const int16_t rawA = ads.readADC_Differential_0_1();
     ads.setGain(gainForRange(sampledRangeB));
-    const int16_t rawB = ads.readADC_SingleEnded(CHANNEL_B_INPUT);
+    const int16_t rawB = ads.readADC_Differential_2_3();
     sumA += rawA;
     sumB += rawB;
     const int32_t magnitudeA = absoluteCount(rawA);

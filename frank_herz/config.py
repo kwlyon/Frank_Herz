@@ -21,13 +21,14 @@ IDENTIFY_RETRY_MS = 1_000
 DEFAULT_AVERAGES = 10
 DEFAULT_SAMPLE_INTERVAL_MS = 50
 
-# ADS1115 programmable full-scale ranges, ordered widest to narrowest. The
-# shield's single-ended inputs must remain between ground and the ADC supply.
+# ADS1115 programmable differential full-scale ranges, ordered widest to
+# narrowest. Each physical input pin must remain between ground and the ADC
+# supply even though the conversion result is signed.
 ADS1115_I2C_ADDRESS = 0x49
 ADC_RANGE_VOLTS = (6.144, 4.096, 2.048, 1.024, 0.512, 0.256)
 DEFAULT_ADC_RANGE_VOLTS = 2.048
-DRIVE_ADC_CHANNEL = 0
-CURRENT_ADC_CHANNEL = 2
+DRIVE_ADC_PAIR = (0, 1)
+CURRENT_ADC_PAIR = (2, 3)
 
 # ---------------- Laboratory calibration (edit these) ----------------
 # Protocol v4 reports the external connector voltage after applying the

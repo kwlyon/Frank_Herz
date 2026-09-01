@@ -16,15 +16,17 @@ firmware or desktop application.
 
 The acquisition board uses an ADS1115 at I2C address `0x49`:
 
-| Application channel | Connector | ADS1115 input | Default divider |
+| Application channel | Connector | ADS1115 differential pair | Default divider |
 |---|---|---:|---:|
-| Channel A / drive monitor | J1 | AIN0 | 909 kΩ high, 101 kΩ low |
-| Channel B / current monitor | J3 | AIN2 | 909 kΩ high, 101 kΩ low |
+| Channel A / drive monitor | J1 | AIN0 − AIN1 | 909 kΩ high, 101 kΩ low |
+| Channel B / current monitor | J3 | AIN2 − AIN3 | 909 kΩ high, 101 kΩ low |
 
 The ADS1115 multiplexes its inputs, so the readings are sequential rather than
-simultaneous. Its PGA setting is written immediately before every AIN0 and AIN2
-conversion. This allows the two channels to use independent ranges cleanly even
-though they share one converter.
+simultaneous. Its PGA setting is written immediately before every AIN0−AIN1 and
+AIN2−AIN3 conversion. This allows the two differential channels to use
+independent ranges cleanly even though they share one converter. The shared
+analog bias is common-mode and therefore cancels instead of becoming a false
+nonzero signal.
 
 Supported bipolar full-scale settings are:
 
@@ -36,24 +38,24 @@ Supported bipolar full-scale settings are:
 - ±0.256 V
 
 These are converter transfer-function ranges, not permission to exceed the
-ADS1115 pin limits. In single-ended use, keep every ADC input between ground and
-the ADC supply limit. Never connect a high-voltage experimental output directly
-to the acquisition board; use the intended monitor output and a properly rated
-divider.
+ADS1115 pin limits. Keep each physical ADC input pin between ground and the ADC
+supply limit even when measuring a signed differential voltage. Never connect a
+high-voltage experimental output directly to the acquisition board; use the
+intended monitor output and a properly rated divider.
 
 ## Voltage conversion and divider configuration
 
 The firmware performs the complete physical conversion for each sample:
 
 ```text
-ADC counts → ADC-node voltage using that sample's active PGA range
+signed differential ADC counts → pair voltage using that sample's active PGA range
            → connector voltage using that channel's resistor divider
 ```
 
-For either channel:
+For either differential pair:
 
 ```text
-Vin = Vadc × (Rhigh + Rlow) / Rlow
+Vin = Vdiff × (Rhigh + Rlow) / Rlow
 ```
 
 The four divider resistances are stored in a versioned, checksummed EEPROM
@@ -70,7 +72,8 @@ RBhigh = 909000    RBlow = 101000
 The Python application receives the already corrected connector voltages. Its
 default drive correction is 1.0 and therefore does not rescale them. It uses the
 reported active PGA ranges only to reconstruct and export the ADC-node voltages
-from the raw counts.
+from the signed raw counts. With equal bias on both inputs, zero differential
+signal is reported as approximately zero rather than the bias voltage.
 
 ## ADC autoranging
 
