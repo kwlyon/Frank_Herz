@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
+from matplotlib.ticker import ScalarFormatter
 import serial.tools.list_ports
 
 from . import config
@@ -219,6 +220,10 @@ class FranckHertzApp(tk.Tk):
         self.figure = Figure(figsize=(10.8, 6.2), dpi=100, constrained_layout=True)
         self.axes = self.figure.add_subplot(111)
         self.secondary_axes = self.axes.twinx()
+        for axis in (self.axes.yaxis, self.secondary_axes.yaxis):
+            formatter = ScalarFormatter(useOffset=False)
+            formatter.set_scientific(False)
+            axis.set_major_formatter(formatter)
         self.axes.set_title("Franck-Hertz Characteristic")
         self.axes.set_xlabel("Drive Voltage (V)")
         self.axes.set_ylabel("Tube Current (pA)")
@@ -1115,6 +1120,11 @@ def run_gui_smoke_test() -> None:
             failures.append("tube current was not on the default left strip axis")
         if app.secondary_axes.get_ylabel() != "Drive Voltage (V)":
             failures.append("drive voltage was not on the default right strip axis")
+        if any(
+            axis.get_major_formatter().get_useOffset()
+            for axis in (app.axes.yaxis, app.secondary_axes.yaxis)
+        ):
+            failures.append("strip axes used misleading additive tick offsets")
         if app.axes.get_legend() is not None:
             failures.append("strip mode displayed an unnecessary legend box")
         if app.cursor_checkbutton.winfo_manager():
