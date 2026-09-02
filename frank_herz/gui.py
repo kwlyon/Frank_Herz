@@ -320,7 +320,7 @@ class FranckHertzApp(tk.Tk):
             visible=False,
             zorder=7,
         )
-        (self.current_time_line,) = self.axes.plot(
+        (self.current_time_line,) = self.secondary_axes.plot(
             [],
             [],
             color="#145DA0",
@@ -328,7 +328,7 @@ class FranckHertzApp(tk.Tk):
             label="Tube Current",
             visible=False,
         )
-        (self.drive_time_line,) = self.secondary_axes.plot(
+        (self.drive_time_line,) = self.axes.plot(
             [],
             [],
             color="#C43B3B",
@@ -412,10 +412,10 @@ class FranckHertzApp(tk.Tk):
             self._hide_measurement_cursor(clear_data=True)
             self.axes.set_title("Two-Channel Strip Recorder")
             self.axes.set_xlabel("Elapsed Time (s)")
-            self.axes.set_ylabel("Tube Current (pA)", color="#145DA0")
-            self.axes.tick_params(axis="y", colors="#145DA0")
-            self.secondary_axes.set_ylabel("Drive Voltage (V)", color="#C43B3B")
-            self.secondary_axes.tick_params(axis="y", colors="#C43B3B")
+            self.axes.set_ylabel("Drive Voltage (V)", color="#C43B3B")
+            self.axes.tick_params(axis="y", colors="#C43B3B")
+            self.secondary_axes.set_ylabel("Tube Current (pA)", color="#145DA0")
+            self.secondary_axes.tick_params(axis="y", colors="#145DA0")
         else:
             if not self.cursor_checkbutton.winfo_manager():
                 self.cursor_checkbutton.pack(side=tk.RIGHT, padx=(10, 2))
@@ -1072,8 +1072,8 @@ class FranckHertzApp(tk.Tk):
             self.axes.autoscale_view()
             self.secondary_axes.autoscale_view(scalex=False, scaley=True)
             self._pad_equal_range(time_values, self.axes.set_xlim)
-            self._pad_equal_range(current_values, self.axes.set_ylim)
-            self._pad_equal_range(drive_values, self.secondary_axes.set_ylim)
+            self._pad_equal_range(drive_values, self.axes.set_ylim)
+            self._pad_equal_range(current_values, self.secondary_axes.set_ylim)
             self.axes.set_autoscalex_on(True)
             self.axes.set_autoscaley_on(True)
             self.secondary_axes.set_autoscalex_on(True)
@@ -1247,10 +1247,10 @@ def run_gui_smoke_test() -> None:
             failures.append("strip recorder was not the default plot mode")
         if tuple(app.plot_mode_combo.cget("values")) != PLOT_MODES:
             failures.append("plot-mode dropdown order was not strip recorder first")
-        if app.axes.get_ylabel() != "Tube Current (pA)":
-            failures.append("tube current was not on the default left strip axis")
-        if app.secondary_axes.get_ylabel() != "Drive Voltage (V)":
-            failures.append("drive voltage was not on the default right strip axis")
+        if app.axes.get_ylabel() != "Drive Voltage (V)":
+            failures.append("drive voltage was not on the default left strip axis")
+        if app.secondary_axes.get_ylabel() != "Tube Current (pA)":
+            failures.append("tube current was not on the default right strip axis")
         if any(
             axis.get_major_formatter().get_useOffset()
             for axis in (app.axes.yaxis, app.secondary_axes.yaxis)
@@ -1324,10 +1324,10 @@ def run_gui_smoke_test() -> None:
             failures.append("strip mode did not display both channels against time")
         if not app.secondary_axes.get_visible():
             failures.append("strip-mode secondary axis was not visible")
-        if app.axes.get_ylabel() != "Tube Current (pA)":
-            failures.append("tube current was not on the left strip axis")
-        if app.secondary_axes.get_ylabel() != "Drive Voltage (V)":
-            failures.append("drive voltage was not on the right strip axis")
+        if app.axes.get_ylabel() != "Drive Voltage (V)":
+            failures.append("drive voltage was not on the left strip axis")
+        if app.secondary_axes.get_ylabel() != "Tube Current (pA)":
+            failures.append("tube current was not on the right strip axis")
         if app.current_time_line.get_color() != "#145DA0":
             failures.append("tube-current strip trace was not blue")
         if app.drive_time_line.get_color() != "#C43B3B":
@@ -1338,10 +1338,10 @@ def run_gui_smoke_test() -> None:
             failures.append("strip-mode live autoscaling was not enabled")
         if not limits_include(times, app.axes.get_xlim()):
             failures.append("strip-mode time autoscaling did not contain acquired data")
-        if not limits_include(current_values, app.axes.get_ylim()):
-            failures.append("strip-mode current autoscaling did not contain acquired data")
-        if not limits_include(drive_values, app.secondary_axes.get_ylim()):
+        if not limits_include(drive_values, app.axes.get_ylim()):
             failures.append("strip-mode drive autoscaling did not contain acquired data")
+        if not limits_include(current_values, app.secondary_axes.get_ylim()):
+            failures.append("strip-mode current autoscaling did not contain acquired data")
 
         app.plot_mode_var.set(XY_PLOT_MODE)
         app._change_plot_mode()
