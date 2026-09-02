@@ -44,7 +44,9 @@ class SimulatorTests(unittest.TestCase):
                 config.SIMULATOR_SWEEP_PERIOD_SECONDS / 4.0
             )
             current_input_v = float(raw.decode("ascii").split(",")[5])
-            noisy_currents.append(current_input_v * 1000.0)
+            noisy_currents.append(
+                current_input_v * 1000.0 / config.PICOAMMETER_MV_PER_PA
+            )
         rms_noise = math.sqrt(
             sum((current - ideal) ** 2 for current in noisy_currents)
             / len(noisy_currents)

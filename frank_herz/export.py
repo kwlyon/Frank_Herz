@@ -9,7 +9,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from .core import Calibration, DataPoint
+from .core import Calibration, DataPoint, tube_current_at_calibration
 
 
 DATA_HEADERS = (
@@ -29,8 +29,10 @@ def export_xlsx(
     path: str | Path,
     points: Iterable[DataPoint],
     calibration: Calibration,
+    channel_a_inverted: bool = False,
+    channel_b_inverted: bool = False,
 ) -> int:
-    """Write the complete dataset and calibration metadata to an .xlsx file."""
+    """Write processed values using the selected signs and retain raw ADC data."""
 
     rows = tuple(points)
     destination = Path(path)
@@ -41,12 +43,17 @@ def export_xlsx(
     sheet = workbook.active
     sheet.title = "Franck-Hertz Data"
     sheet.append(DATA_HEADERS)
+    channel_a_sign = -1.0 if channel_a_inverted else 1.0
+    channel_b_sign = -1.0 if channel_b_inverted else 1.0
 
     for point in rows:
         sheet.append(
             (
-                point.drive_voltage_v,
-                point.tube_current_pa,
+                channel_a_sign * point.drive_voltage_v,
+                channel_b_sign
+                * tube_current_at_calibration(
+                    point, calibration.picoammeter_mv_per_pa
+                ),
                 point.elapsed_ms,
                 point.drive_adc_v,
                 point.current_adc_v,
@@ -75,6 +82,8 @@ def export_xlsx(
         ("Picoammeter calibration", calibration.picoammeter_mv_per_pa, "mV per pA"),
         ("Picoammeter zero", calibration.picoammeter_zero_v, "V"),
         ("Picoammeter polarity", calibration.picoammeter_polarity, "+1 or -1"),
+        ("Channel A inverted", channel_a_inverted, "software display/export sign"),
+        ("Channel B inverted", channel_b_inverted, "software display/export sign"),
     )
     for row in metadata_rows:
         metadata.append(row)

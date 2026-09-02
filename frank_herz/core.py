@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 import threading
 from typing import Callable, Iterable, Sequence
@@ -60,6 +60,7 @@ class DataPoint:
     current_adc_counts: float
     drive_adc_range_v: float
     current_adc_range_v: float
+    picoammeter_mv_per_pa: float = config.PICOAMMETER_MV_PER_PA
 
 
 def parse_data_line(line: bytes | str) -> RawSample:
@@ -148,6 +149,7 @@ def convert_sample(
         current_adc_counts=raw.current_adc_counts,
         drive_adc_range_v=drive_adc_range_v,
         current_adc_range_v=current_adc_range_v,
+        picoammeter_mv_per_pa=calibration.picoammeter_mv_per_pa,
     )
 
 
@@ -200,6 +202,8 @@ class AcquisitionController:
         self.storage_full = False
         self.drive_adc_range_v = config.DEFAULT_ADC_RANGE_VOLTS
         self.current_adc_range_v = config.DEFAULT_ADC_RANGE_VOLTS
+        self.channel_a_inverted = False
+        self.channel_b_inverted = False
 
     def mark_device_ready(self) -> None:
         self.device_ready = True
@@ -213,6 +217,19 @@ class AcquisitionController:
 
         self.drive_adc_range_v = validate_adc_range(drive_range_v)
         self.current_adc_range_v = validate_adc_range(current_range_v)
+
+    def set_channel_inversion(
+        self, channel_a_inverted: bool, channel_b_inverted: bool
+    ) -> None:
+        """Set reversible software polarity for display and export."""
+
+        self.channel_a_inverted = bool(channel_a_inverted)
+        self.channel_b_inverted = bool(channel_b_inverted)
+
+    def set_picoammeter_mv_per_pa(self, value: float) -> None:
+        """Set the reversible desktop current-conversion calibration."""
+
+        self.calibration = replace(self.calibration, picoammeter_mv_per_pa=value)
 
     def start(self) -> None:
         if not self.device_ready:
@@ -257,27 +274,63 @@ class AcquisitionController:
 
 
 def downsample_for_display(
-    points: Iterable[DataPoint], maximum: int = config.MAX_DISPLAY_POINTS
+    points: Iterable[DataPoint],
+    maximum: int = config.MAX_DISPLAY_POINTS,
+    channel_a_inverted: bool = False,
+    channel_b_inverted: bool = False,
+    picoammeter_mv_per_pa: float | None = None,
 ) -> tuple[list[float], list[float]]:
-    """Return a representative plot view while retaining every export row."""
+    """Return a representative, reversibly signed X-Y plot view."""
 
     selected = _select_points_for_display(points, maximum)
+    channel_a_sign = -1.0 if channel_a_inverted else 1.0
+    channel_b_sign = -1.0 if channel_b_inverted else 1.0
     return (
-        [point.drive_voltage_v for point in selected],
-        [point.tube_current_pa for point in selected],
+        [channel_a_sign * point.drive_voltage_v for point in selected],
+        [
+            channel_b_sign
+            * tube_current_at_calibration(point, picoammeter_mv_per_pa)
+            for point in selected
+        ],
     )
 
 
 def downsample_for_strip_recorder(
-    points: Iterable[DataPoint], maximum: int = config.MAX_DISPLAY_POINTS
+    points: Iterable[DataPoint],
+    maximum: int = config.MAX_DISPLAY_POINTS,
+    channel_a_inverted: bool = False,
+    channel_b_inverted: bool = False,
+    picoammeter_mv_per_pa: float | None = None,
 ) -> tuple[list[float], list[float], list[float]]:
-    """Return elapsed time and both acquired channels for the strip view."""
+    """Return time and both channels with reversible software polarity."""
 
     selected = _select_points_for_display(points, maximum)
+    channel_a_sign = -1.0 if channel_a_inverted else 1.0
+    channel_b_sign = -1.0 if channel_b_inverted else 1.0
     return (
         [point.elapsed_ms / 1000.0 for point in selected],
-        [point.drive_voltage_v for point in selected],
-        [point.tube_current_pa for point in selected],
+        [channel_a_sign * point.drive_voltage_v for point in selected],
+        [
+            channel_b_sign
+            * tube_current_at_calibration(point, picoammeter_mv_per_pa)
+            for point in selected
+        ],
+    )
+
+
+def tube_current_at_calibration(
+    point: DataPoint, picoammeter_mv_per_pa: float | None = None
+) -> float:
+    """Recalculate one stored current for a selected mV/pA calibration."""
+
+    if picoammeter_mv_per_pa is None:
+        return point.tube_current_pa
+    if not math.isfinite(picoammeter_mv_per_pa) or picoammeter_mv_per_pa <= 0:
+        raise ValueError("Picoammeter mV/pA must be greater than zero.")
+    return (
+        point.tube_current_pa
+        * point.picoammeter_mv_per_pa
+        / picoammeter_mv_per_pa
     )
 
 

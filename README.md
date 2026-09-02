@@ -6,7 +6,7 @@ title is **Franck–Hertz Data Acquisition**. Its Franck–Hertz X–Y character
 two-channel strip recorder, Excel export, live plot autoscaling, measurement
 cursor, and simulator are all retained.
 
-Version 2.0 supports the current dual-channel hardware only. The same firmware
+Version 2.x supports the current dual-channel hardware only. The same firmware
 may also be copied into other acquisition projects, but this desktop application
 remains specifically configured for the Franck–Hertz experiment. The retired analog
 gain-switching hardware and its compatibility protocol are not part of this
@@ -74,6 +74,9 @@ default drive correction is 1.0 and therefore does not rescale them. It uses the
 reported active PGA ranges only to reconstruct and export the ADC-node voltages
 from the signed raw counts. With equal bias on both inputs, zero differential
 signal is reported as approximately zero rather than the bias voltage.
+Tube current is calculated in the desktop application as picoammeter output
+millivolts divided by the **Picoammeter (mV/pA)** field. The field defaults to
+10 mV/pA, so a 10 mV output is displayed as 1 pA.
 
 ## ADC autoranging
 
@@ -160,15 +163,23 @@ Choose a serial port or **SIMULATOR (no hardware)** and select **Connect**.
 - **Auto-scale live** controls only the Matplotlib axes. Home resumes live fitting;
   Pan or Zoom holds the chosen plot limits.
 - **ADC Autorange** controls only the ADS1115 electrical ranges.
+- **Invert Channel A** and **Invert Channel B** independently and reversibly
+  multiply all displayed values for that channel by -1, including samples already
+  retained. Clearing a checkbox restores the original polarity. Raw ADC values are
+  never modified.
+- **Picoammeter (mV/pA)** defaults to 10 and can be changed for another
+  picoammeter output scale. Press Enter or leave the field to apply it to all
+  retained and future samples.
 - With ADC Autorange selected, the Channel A and Channel B dropdowns are disabled
   for editing but continuously display the ranges reported by the firmware.
 - With ADC Autorange cleared, both range dropdowns are independently selectable.
 - The measurement cursor remains available in X–Y mode and can be hidden or
   dragged to a nearby acquired point.
 
-Excel exports retain the original measurement/raw columns and append the active
-Channel A and Channel B ADC range for every row. This makes raw ADC-node voltages
-auditable even when the firmware changes ranges during a run.
+Excel exports apply the current Channel A and Channel B inversion checkbox states
+to the processed measurement columns. The raw ADC columns remain unchanged, and
+the **Calibration** sheet records both checkbox states. This makes raw ADC-node
+voltages auditable even when firmware ranges or software polarity change.
 
 ## Simulator
 

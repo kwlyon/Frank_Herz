@@ -72,6 +72,11 @@ class FranckHertzApp(tk.Tk):
         self._port_open = False
         self.autoscale_var = tk.BooleanVar(value=True)
         self.autorange_var = tk.BooleanVar(value=True)
+        self.invert_a_var = tk.BooleanVar(value=False)
+        self.invert_b_var = tk.BooleanVar(value=False)
+        self.picoammeter_scale_var = tk.StringVar(
+            value=f"{config.PICOAMMETER_MV_PER_PA:g}"
+        )
         default_range_label = self._format_adc_range(config.DEFAULT_ADC_RANGE_VOLTS)
         self.range_a_var = tk.StringVar(value=default_range_label)
         self.range_b_var = tk.StringVar(value=default_range_label)
@@ -80,6 +85,9 @@ class FranckHertzApp(tk.Tk):
         self.controller = AcquisitionController(
             sender=self._write,
             calibration=Calibration(),
+        )
+        self.calibration_text_var = tk.StringVar(
+            value=self._calibration_summary()
         )
 
         self._build_ui()
@@ -196,6 +204,45 @@ class FranckHertzApp(tk.Tk):
         self.range_a_combo.bind("<<ComboboxSelected>>", self._manual_range_changed)
         self.range_b_combo.bind("<<ComboboxSelected>>", self._manual_range_changed)
 
+        self.invert_a_checkbutton = ttk.Checkbutton(
+            controls,
+            text="Invert Channel A",
+            variable=self.invert_a_var,
+            command=self._toggle_channel_inversion,
+        )
+        self.invert_a_checkbutton.grid(
+            row=2, column=1, columnspan=2, sticky="w", pady=(8, 0)
+        )
+        self.invert_b_checkbutton = ttk.Checkbutton(
+            controls,
+            text="Invert Channel B",
+            variable=self.invert_b_var,
+            command=self._toggle_channel_inversion,
+        )
+        self.invert_b_checkbutton.grid(
+            row=2, column=4, columnspan=2, sticky="w", pady=(8, 0)
+        )
+        ttk.Label(controls, text="Picoammeter:").grid(
+            row=2, column=6, sticky="e", pady=(8, 0)
+        )
+        self.picoammeter_scale_entry = ttk.Entry(
+            controls,
+            width=9,
+            textvariable=self.picoammeter_scale_var,
+        )
+        self.picoammeter_scale_entry.grid(
+            row=2, column=7, sticky="e", padx=(5, 4), pady=(8, 0)
+        )
+        self.picoammeter_scale_entry.bind(
+            "<Return>", self._apply_picoammeter_calibration
+        )
+        self.picoammeter_scale_entry.bind(
+            "<FocusOut>", self._apply_picoammeter_calibration
+        )
+        ttk.Label(controls, text="mV/pA").grid(
+            row=2, column=8, sticky="w", pady=(8, 0)
+        )
+
         status_frame = ttk.Frame(self, padding=(12, 2, 12, 4))
         status_frame.pack(fill=tk.X)
         self.status_var = tk.StringVar(value="Disconnected")
@@ -209,11 +256,9 @@ class FranckHertzApp(tk.Tk):
         self.count_var = tk.StringVar(value="0 points")
         ttk.Label(status_frame, textvariable=self.count_var).pack(side=tk.RIGHT)
 
-        calibration_text = (
-            f"Drive scale: {self.controller.calibration.drive_scale:g}×    "
-            f"Picoammeter: {self.controller.calibration.picoammeter_mv_per_pa:g} mV/pA"
-        )
-        ttk.Label(self, text=calibration_text, foreground="#555555").pack(
+        ttk.Label(
+            self, textvariable=self.calibration_text_var, foreground="#555555"
+        ).pack(
             anchor="w", padx=12, pady=(0, 2)
         )
 
@@ -613,6 +658,8 @@ class FranckHertzApp(tk.Tk):
         self._schedule_identity_probe()
 
     def _start_acquisition(self) -> None:
+        if not self._apply_picoammeter_calibration(show_error=True):
+            return
         try:
             self.controller.start()
         except (ConnectionError, RuntimeError) as exc:
@@ -674,6 +721,8 @@ class FranckHertzApp(tk.Tk):
             self._event_queue.put(event)
 
     def _export_data(self) -> Path | None:
+        if not self._apply_picoammeter_calibration(show_error=True):
+            return None
         points = self.controller.dataset.snapshot()
         if not points:
             messagebox.showinfo("No data", "There is no collected data to export.")
@@ -688,7 +737,13 @@ class FranckHertzApp(tk.Tk):
         if not selected:
             return None
         try:
-            row_count = export_xlsx(selected, points, self.controller.calibration)
+            row_count = export_xlsx(
+                selected,
+                points,
+                self.controller.calibration,
+                self.controller.channel_a_inverted,
+                self.controller.channel_b_inverted,
+            )
         except (OSError, PermissionError, ValueError) as exc:
             messagebox.showerror("Export failed", str(exc))
             self._set_status(f"Excel export failed: {exc}", "error")
@@ -828,6 +883,47 @@ class FranckHertzApp(tk.Tk):
         except ConnectionError as exc:
             self._event_queue.put(("error", f"Could not change ADC autorange: {exc}"))
 
+    def _toggle_channel_inversion(self) -> None:
+        """Reversibly apply independent polarity to all displayed samples."""
+
+        self.controller.set_channel_inversion(
+            self.invert_a_var.get(), self.invert_b_var.get()
+        )
+        self._last_plotted_count = -1
+        self._redraw_plot(force=True)
+
+    def _calibration_summary(self) -> str:
+        calibration = self.controller.calibration
+        return (
+            f"Drive scale: {calibration.drive_scale:g}×    "
+            f"Picoammeter: {calibration.picoammeter_mv_per_pa:g} mV/pA"
+        )
+
+    def _apply_picoammeter_calibration(
+        self, event=None, show_error: bool = False
+    ) -> bool:
+        """Apply an editable mV/pA value to retained and future samples."""
+
+        del event
+        previous = self.controller.calibration.picoammeter_mv_per_pa
+        try:
+            value = float(self.picoammeter_scale_var.get().strip())
+            self.controller.set_picoammeter_mv_per_pa(value)
+        except (TypeError, ValueError):
+            self.picoammeter_scale_var.set(f"{previous:g}")
+            message = "Picoammeter mV/pA must be a finite number greater than zero."
+            self._set_status(message, "error")
+            if show_error:
+                messagebox.showerror("Invalid picoammeter calibration", message)
+            return False
+
+        self.picoammeter_scale_var.set(f"{value:g}")
+        self.calibration_text_var.set(self._calibration_summary())
+        if value != previous:
+            self._last_plotted_count = -1
+            self._redraw_plot(force=True)
+        return True
+
     def _manual_range_changed(self, event) -> None:
         if self.autorange_var.get() or not self.controller.device_ready:
             self._update_adc_control_states()
@@ -873,7 +969,14 @@ class FranckHertzApp(tk.Tk):
 
         if self.plot_mode_var.get() == STRIP_RECORDER_MODE:
             time_values, drive_values, current_values = (
-                downsample_for_strip_recorder(points)
+                downsample_for_strip_recorder(
+                    points,
+                    channel_a_inverted=self.controller.channel_a_inverted,
+                    channel_b_inverted=self.controller.channel_b_inverted,
+                    picoammeter_mv_per_pa=(
+                        self.controller.calibration.picoammeter_mv_per_pa
+                    ),
+                )
             )
             self._cursor_x_values = []
             self._cursor_y_values = []
@@ -891,7 +994,14 @@ class FranckHertzApp(tk.Tk):
             else:
                 self._reset_empty_plot()
         else:
-            x_values, y_values = downsample_for_display(points)
+            x_values, y_values = downsample_for_display(
+                points,
+                channel_a_inverted=self.controller.channel_a_inverted,
+                channel_b_inverted=self.controller.channel_b_inverted,
+                picoammeter_mv_per_pa=(
+                    self.controller.calibration.picoammeter_mv_per_pa
+                ),
+            )
             self._cursor_x_values = x_values
             self._cursor_y_values = y_values
             self.plot_line.set_data(x_values, y_values)
@@ -1110,6 +1220,27 @@ def run_gui_smoke_test() -> None:
             failures.append("live-autoscale control was not visible")
         if not app.autorange_checkbutton.winfo_ismapped():
             failures.append("ADC-autorange control was not visible")
+        if not app.invert_a_checkbutton.winfo_ismapped() or not (
+            app.invert_b_checkbutton.winfo_ismapped()
+        ):
+            failures.append("independent channel-inversion controls were not visible")
+        if app.invert_a_var.get() or app.invert_b_var.get():
+            failures.append("channel inversion was not disabled by default")
+        if not app.picoammeter_scale_entry.winfo_ismapped():
+            failures.append("editable picoammeter calibration was not visible")
+        if app.picoammeter_scale_var.get() != "10":
+            failures.append("picoammeter calibration did not default to 10 mV/pA")
+        app.invert_a_var.set(True)
+        app._toggle_channel_inversion()
+        if not app.controller.channel_a_inverted or app.controller.channel_b_inverted:
+            failures.append("Channel A inversion was not independent")
+        app.invert_a_var.set(False)
+        app.invert_b_var.set(True)
+        app._toggle_channel_inversion()
+        if app.controller.channel_a_inverted or not app.controller.channel_b_inverted:
+            failures.append("Channel B inversion was not independent")
+        app.invert_b_var.set(False)
+        app._toggle_channel_inversion()
         if not app.range_a_combo.winfo_ismapped() or not app.range_b_combo.winfo_ismapped():
             failures.append("independent ADC-range controls were not visible")
         if app.plot_mode_var.get() != STRIP_RECORDER_MODE:
@@ -1234,6 +1365,42 @@ def run_gui_smoke_test() -> None:
             failures.append("X–Y drive autoscaling did not contain acquired data")
         if not limits_include(y_values, app.axes.get_ylim()):
             failures.append("X–Y current autoscaling did not contain acquired data")
+
+        retained_before_inversion = app.controller.dataset.snapshot()
+        app.invert_a_var.set(True)
+        app._toggle_channel_inversion()
+        if list(app.plot_line.get_xdata()) != [-value for value in x_values] or list(
+            app.plot_line.get_ydata()
+        ) != y_values:
+            failures.append("Channel A inversion did not update all retained plot data")
+        app.invert_a_var.set(False)
+        app.invert_b_var.set(True)
+        app._toggle_channel_inversion()
+        if list(app.plot_line.get_xdata()) != x_values or list(
+            app.plot_line.get_ydata()
+        ) != [-value for value in y_values]:
+            failures.append("Channel B inversion did not update all retained plot data")
+        app.invert_b_var.set(False)
+        app._toggle_channel_inversion()
+        if list(app.plot_line.get_xdata()) != x_values or list(
+            app.plot_line.get_ydata()
+        ) != y_values:
+            failures.append("clearing channel inversion did not restore plot polarity")
+        if app.controller.dataset.snapshot() != retained_before_inversion:
+            failures.append("channel inversion modified the retained raw dataset")
+
+        app.picoammeter_scale_var.set("20")
+        if not app._apply_picoammeter_calibration() or list(
+            app.plot_line.get_ydata()
+        ) != [value / 2.0 for value in y_values]:
+            failures.append("picoammeter field did not rescale all retained data")
+        app.picoammeter_scale_var.set("10")
+        if not app._apply_picoammeter_calibration() or list(
+            app.plot_line.get_ydata()
+        ) != y_values:
+            failures.append("restoring picoammeter calibration did not restore data")
+        if app.controller.dataset.snapshot() != retained_before_inversion:
+            failures.append("picoammeter calibration modified retained raw data")
 
         app.cursor_visible_var.set(False)
         app._toggle_measurement_cursor()

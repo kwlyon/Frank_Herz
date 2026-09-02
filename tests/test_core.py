@@ -40,9 +40,36 @@ class ProtocolTests(unittest.TestCase):
         raw = parse_data_line("DATA,125,16000,8000,10.000000,5.000000")
         point = convert_sample(raw, Calibration())
         self.assertAlmostEqual(point.drive_voltage_v, 10.0)
-        self.assertAlmostEqual(point.tube_current_pa, 5000.0)
+        self.assertAlmostEqual(point.tube_current_pa, 500.0)
         self.assertAlmostEqual(point.drive_adc_v, 1.0)
         self.assertAlmostEqual(point.current_adc_v, 0.5)
+
+    def test_ten_millivolts_is_one_picoamp_at_default_calibration(self) -> None:
+        raw = parse_data_line("DATA,125,0,160,0.000000,0.010000")
+        point = convert_sample(raw, Calibration())
+
+        self.assertAlmostEqual(point.tube_current_pa, 1.0)
+        self.assertAlmostEqual(point.picoammeter_mv_per_pa, 10.0)
+
+    def test_channel_inversion_is_independent_and_preserves_raw_data(self) -> None:
+        raw = parse_data_line("DATA,125,1600,3200,0.100000,0.200000")
+        point = convert_sample(raw, Calibration())
+
+        channel_a = downsample_for_display((point,), channel_a_inverted=True)
+        channel_b = downsample_for_display((point,), channel_b_inverted=True)
+        both = downsample_for_display(
+            (point,), channel_a_inverted=True, channel_b_inverted=True
+        )
+        original = downsample_for_display((point,))
+
+        self.assertEqual(channel_a, ([-0.1], [20.0]))
+        self.assertEqual(channel_b, ([0.1], [-20.0]))
+        self.assertEqual(both, ([-0.1], [-20.0]))
+        self.assertEqual(original, ([0.1], [20.0]))
+        self.assertAlmostEqual(point.drive_voltage_v, 0.1)
+        self.assertAlmostEqual(point.tube_current_pa, 20.0)
+        self.assertEqual(point.drive_adc_counts, raw.drive_adc_counts)
+        self.assertEqual(point.current_adc_counts, raw.current_adc_counts)
 
     def test_adc_node_voltage_uses_each_active_range_independently(self) -> None:
         raw = parse_data_line("DATA,125,16000,16000,10.000000,5.000000")
@@ -99,6 +126,66 @@ class AcquisitionStateTests(unittest.TestCase):
         assert point is not None
         self.assertAlmostEqual(point.drive_adc_v, 2.0)
         self.assertAlmostEqual(point.current_adc_v, 0.25)
+
+    def test_inversion_applies_to_all_retained_samples_and_is_reversible(self) -> None:
+        self.controller.start()
+        first = self.controller.ingest(
+            "DATA,10,1600,3200,0.100000,0.200000"
+        )
+        second = self.controller.ingest(
+            "DATA,20,3200,6400,0.200000,0.400000"
+        )
+
+        assert first is not None and second is not None
+        retained = self.controller.dataset.snapshot()
+        self.controller.set_channel_inversion(True, True)
+        inverted = downsample_for_strip_recorder(
+            retained,
+            channel_a_inverted=self.controller.channel_a_inverted,
+            channel_b_inverted=self.controller.channel_b_inverted,
+        )
+        self.assertEqual(inverted, ([0.01, 0.02], [-0.1, -0.2], [-20.0, -40.0]))
+
+        self.controller.set_channel_inversion(False, False)
+        restored = downsample_for_strip_recorder(
+            retained,
+            channel_a_inverted=self.controller.channel_a_inverted,
+            channel_b_inverted=self.controller.channel_b_inverted,
+        )
+        self.assertEqual(restored, ([0.01, 0.02], [0.1, 0.2], [20.0, 40.0]))
+        self.assertEqual(self.controller.dataset.snapshot(), retained)
+
+    def test_picoammeter_scale_recalculates_all_retained_samples(self) -> None:
+        self.controller.start()
+        first = self.controller.ingest("DATA,10,0,160,0.000000,0.010000")
+        second = self.controller.ingest("DATA,20,0,320,0.000000,0.020000")
+        assert first is not None and second is not None
+        retained = self.controller.dataset.snapshot()
+
+        self.controller.set_picoammeter_mv_per_pa(20.0)
+        _, _, recalibrated = downsample_for_strip_recorder(
+            retained,
+            picoammeter_mv_per_pa=(
+                self.controller.calibration.picoammeter_mv_per_pa
+            ),
+        )
+        self.assertEqual(recalibrated, [0.5, 1.0])
+
+        self.controller.set_picoammeter_mv_per_pa(10.0)
+        _, _, restored = downsample_for_strip_recorder(
+            retained,
+            picoammeter_mv_per_pa=(
+                self.controller.calibration.picoammeter_mv_per_pa
+            ),
+        )
+        self.assertEqual(restored, [1.0, 2.0])
+        self.assertEqual(self.controller.dataset.snapshot(), retained)
+
+    def test_picoammeter_scale_rejects_zero_and_nonfinite_values(self) -> None:
+        for value in (0.0, -1.0, float("inf"), float("nan")):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    self.controller.set_picoammeter_mv_per_pa(value)
 
     def test_clear_requires_confirmation_and_erases_only_after_yes(self) -> None:
         self.controller.start()

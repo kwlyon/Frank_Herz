@@ -37,9 +37,9 @@ CURRENT_ADC_PAIR = (2, 3)
 DRIVE_VOLTAGE_SCALE = 1.0
 DRIVE_VOLTAGE_OFFSET_V = 0.0
 
-# Picoammeter analog-output calibration. The requested working assumption is
-# 1 mV per pA. Tube current is calculated after subtracting the zero voltage.
-PICOAMMETER_MV_PER_PA = 1.0
+# Picoammeter analog-output calibration. Current (pA) equals output (mV)
+# divided by this value after subtracting the zero voltage.
+PICOAMMETER_MV_PER_PA = 10.0
 PICOAMMETER_ZERO_V = 0.0
 PICOAMMETER_POLARITY = 1.0
 # ----------------------------------------------------------------------
