@@ -60,10 +60,12 @@ const int32_t AUTORANGE_SATURATION_COUNTS = 32112L;  // 98% of full scale
 const double AUTORANGE_NARROW_FRACTION = 0.55;
 const uint8_t AUTORANGE_NARROW_RECORDS = 20;
 const uint8_t AUTORANGE_COOLDOWN_RECORDS = 8;
+const uint8_t RANGE_SETTLING_DISCARD_PAIRS = 1;
 
 uint8_t activeRange[2] = {DEFAULT_RANGE_INDEX, DEFAULT_RANGE_INDEX};
 uint8_t narrowPersistence[2] = {0, 0};
 uint8_t rangeCooldown[2] = {0, 0};
+uint8_t rangeSettlingDiscardPairs = 0;
 bool autorangeEnabled = true;
 
 bool acquisitionRunning = false;
@@ -327,6 +329,18 @@ void acquireAndEmitRecord() {
   int32_t maximumA = 0;
   int32_t maximumB = 0;
 
+  // The ADS1115 itself settles in one conversion cycle, but its switched-
+  // capacitor inputs draw transient current from the external divider network.
+  // After a PGA-range change, discard one complete A/B pair so neither channel
+  // can contribute a range-transition settling transient to the next record.
+  while (rangeSettlingDiscardPairs > 0) {
+    ads.setGain(gainForRange(sampledRangeA));
+    (void)ads.readADC_Differential_0_1();
+    ads.setGain(gainForRange(sampledRangeB));
+    (void)ads.readADC_Differential_2_3();
+    --rangeSettlingDiscardPairs;
+  }
+
   for (uint8_t sampleIndex = 0; sampleIndex < averageCount; ++sampleIndex) {
     ads.setGain(gainForRange(sampledRangeA));
     const int16_t rawA = ads.readADC_Differential_0_1();
@@ -356,6 +370,7 @@ void acquireAndEmitRecord() {
   const bool rangeChangedA = updateChannelAutorange(0, maximumA);
   const bool rangeChangedB = updateChannelAutorange(1, maximumB);
   if (rangeChangedA || rangeChangedB) {
+    rangeSettlingDiscardPairs = RANGE_SETTLING_DISCARD_PAIRS;
     printRangeStatus();
   }
 }
@@ -437,11 +452,16 @@ void handleRangeCommand(char *arguments) {
     Serial.println(F("ERR,INVALID_RANGE,valid values are 6.144,4.096,2.048,1.024,0.512,0.256"));
     return;
   }
+  bool rangeChanged = false;
   if (strcmp(channel, "A") == 0 || strcmp(channel, "a") == 0) {
+    rangeChanged = activeRange[0] != requestedRange;
     activeRange[0] = requestedRange;
   } else if (strcmp(channel, "B") == 0 || strcmp(channel, "b") == 0) {
+    rangeChanged = activeRange[1] != requestedRange;
     activeRange[1] = requestedRange;
   } else if (strcmp(channel, "both") == 0) {
+    rangeChanged = activeRange[0] != requestedRange ||
+                   activeRange[1] != requestedRange;
     activeRange[0] = requestedRange;
     activeRange[1] = requestedRange;
   } else {
@@ -449,6 +469,9 @@ void handleRangeCommand(char *arguments) {
     return;
   }
   resetAutorangeHistory();
+  if (rangeChanged) {
+    rangeSettlingDiscardPairs = RANGE_SETTLING_DISCARD_PAIRS;
+  }
   Serial.print(F("OK,range,"));
   Serial.print(channel);
   Serial.print(',');

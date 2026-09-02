@@ -73,6 +73,33 @@ class FirmwareArchitectureTests(unittest.TestCase):
             with self.subTest(marker=marker):
                 self.assertIn(marker, self.source)
 
+    def test_pga_range_changes_discard_one_settling_pair(self) -> None:
+        required_markers = (
+            "const uint8_t RANGE_SETTLING_DISCARD_PAIRS = 1;",
+            "uint8_t rangeSettlingDiscardPairs = 0;",
+            "while (rangeSettlingDiscardPairs > 0)",
+            "(void)ads.readADC_Differential_0_1();",
+            "(void)ads.readADC_Differential_2_3();",
+            "if (rangeChangedA || rangeChangedB)",
+            "if (rangeChanged)",
+            "rangeSettlingDiscardPairs = RANGE_SETTLING_DISCARD_PAIRS;",
+        )
+        for marker in required_markers:
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.source)
+
+        discard_position = self.source.index("while (rangeSettlingDiscardPairs > 0)")
+        averaging_position = self.source.index(
+            "for (uint8_t sampleIndex = 0; sampleIndex < averageCount; ++sampleIndex)"
+        )
+        self.assertLess(discard_position, averaging_position)
+        self.assertGreaterEqual(
+            self.source.count(
+                "rangeSettlingDiscardPairs = RANGE_SETTLING_DISCARD_PAIRS;"
+            ),
+            2,
+        )
+
     def test_voltage_math_uses_sampled_range_then_channel_divider(self) -> None:
         required_markers = (
             "fullScaleVoltsForRange(rangeIndex) / 32768.0",

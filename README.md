@@ -95,6 +95,12 @@ The `DATA` row is transmitted before a resulting `#range` notification. Thus the
 desktop interprets that row with the range used to acquire it and applies the new
 range to the following row.
 
+After any automatic or manual PGA-range change, the firmware defensively
+discards one complete Channel A/Channel B conversion pair before building the
+next averaged record. The ADS1115 specifies single-cycle internal settling, but
+the extra pair allows the external high-impedance divider network to settle and
+prevents a range-transition transient from entering either plotted channel.
+
 ## Serial protocol version 4
 
 The firmware starts at 115200 baud and identifies itself with:
